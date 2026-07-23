@@ -1,0 +1,307 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StudyLevel {
+  SCHOOL
+  UNDERGRADUATE
+  POSTGRADUATE
+  SELF_LEARNER
+}
+
+enum Visibility {
+  PRIVATE
+  FRIENDS_ONLY
+  PUBLIC
+}
+
+enum DocumentType {
+  PDF
+  JPG
+  JPEG
+  PNG
+}
+
+enum AnswerOption {
+  A
+  B
+  C
+  D
+}
+
+enum ExamType {
+  INDIVIDUAL
+  FRIEND_EXAM
+}
+
+enum ExamStatus {
+  DRAFT
+  SCHEDULED
+  STARTED
+  COMPLETED
+  CANCELLED
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum NotificationType {
+  QUIZ
+  EXAM
+  FRIEND
+  REMINDER
+  AI
+  GENERAL
+}
+
+model User {
+  id               String     @id @default(uuid())
+  fullName         String
+  email            String     @unique
+  passwordHash     String
+  bio              String?
+  university       String?
+  studyLevel       StudyLevel @default(UNDERGRADUATE)
+  profileImageUrl  String?
+  passwordResetToken String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  subjects         Subject[]
+  documents        Document[]
+  quizzes          Quiz[]
+  quizAttempts     QuizAttempt[]
+  spacedRepetitions SpacedRepetition[]
+  organizedExams   Exam[]              @relation("ExamOrganizer")
+  examParticipations ExamParticipant[]
+  notifications    Notification[]
+
+  friendshipsSent     Friendship[] @relation("FriendshipRequester")
+  friendshipsReceived Friendship[] @relation("FriendshipAddressee")
+
+  @@map("users")
+}
+
+model Friendship {
+  id          String           @id @default(uuid())
+  requesterId String
+  addresseeId String
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  requester User @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee User @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@map("friendships")
+}
+
+model Subject {
+  id          String     @id @default(uuid())
+  name        String
+  description String?
+  visibility  Visibility @default(PRIVATE)
+  allowCopy   Boolean    @default(false)
+  ownerId     String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  owner     User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  topics    Topic[]
+  documents Document[]
+  quizzes   Quiz[]
+  exams     Exam[]
+
+  @@map("subjects")
+}
+
+model Topic {
+  id          String     @id @default(uuid())
+  subjectId   String
+  name        String
+  description String?
+  visibility  Visibility @default(PRIVATE)
+  allowCopy   Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  subject           Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  documents         Document[]
+  quizzes           Quiz[]
+  exams             Exam[]
+  spacedRepetitions SpacedRepetition[]
+
+  @@map("topics")
+}
+
+model Document {
+  id            String       @id @default(uuid())
+  title         String
+  subjectId     String
+  topicId       String?
+  fileUrl       String
+  fileType      DocumentType
+  fileSizeBytes Int
+  visibility    Visibility   @default(PRIVATE)
+  allowCopy     Boolean      @default(false)
+  ownerId       String
+  uploadedAt    DateTime     @default(now())
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic   Topic?  @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  owner   User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model Quiz {
+  id               String     @id @default(uuid())
+  title            String
+  subjectId        String
+  topicId          String
+  visibility       Visibility @default(PRIVATE)
+  allowCopy        Boolean    @default(false)
+  isAiGenerated    Boolean    @default(false)
+  timeLimitMinutes Int?
+  ownerId          String
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  subject           Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic             Topic               @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  owner             User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  questions         Question[]
+  attempts          QuizAttempt[]
+  spacedRepetitions SpacedRepetition[]
+
+  @@map("quizzes")
+}
+
+model Question {
+  id             String       @id @default(uuid())
+  quizId         String?
+  examId         String?
+  order          Int          @default(0)
+  text           String
+  optionA        String
+  optionB        String
+  optionC        String
+  optionD        String
+  correctAnswer  AnswerOption
+  explanation    String?
+
+  quiz Quiz? @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  exam Exam? @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers QuestionAnswer[]
+
+  @@map("questions")
+}
+
+model QuizAttempt {
+  id               String   @id @default(uuid())
+  quizId           String
+  userId           String
+  correctCount     Int
+  totalQuestions   Int
+  scorePercent     Float
+  timeTakenSeconds Int?
+  attemptedAt      DateTime @default(now())
+
+  quiz    Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers QuestionAnswer[]
+
+  @@map("quiz_attempts")
+}
+
+model QuestionAnswer {
+  id             String        @id @default(uuid())
+  attemptId      String
+  questionId     String
+  selectedAnswer AnswerOption?
+  isCorrect      Boolean
+
+  attempt  QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@map("question_answers")
+}
+
+model SpacedRepetition {
+  id               String   @id @default(uuid())
+  userId           String
+  quizId           String
+  topicId          String
+  lastScore        Float
+  intervalDays     Int      @default(1)
+  nextRevisionDate DateTime
+  updatedAt        DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quiz  Quiz  @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, quizId])
+  @@map("spaced_repetitions")
+}
+
+model Exam {
+  id              String     @id @default(uuid())
+  title           String
+  subjectId       String
+  topicId         String
+  type            ExamType   @default(INDIVIDUAL)
+  status          ExamStatus @default(SCHEDULED)
+  durationMinutes Int
+  startTime       DateTime?
+  organizerId     String
+  createdAt       DateTime   @default(now())
+
+  subject      Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic        Topic             @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  organizer    User              @relation("ExamOrganizer", fields: [organizerId], references: [id], onDelete: Cascade)
+  questions    Question[]
+  participants ExamParticipant[]
+
+  @@map("exams")
+}
+
+model ExamParticipant {
+  id               String   @id @default(uuid())
+  examId           String
+  userId           String
+  score            Float?
+  timeTakenSeconds Int?
+  hasCompleted     Boolean  @default(false)
+  invitedAt        DateTime @default(now())
+
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, userId])
+  @@map("exam_participants")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(GENERAL)
+  isRead    Boolean          @default(false)
+  relatedId String?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
