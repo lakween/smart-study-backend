@@ -6,7 +6,7 @@ import { uploadMemory } from '../middleware/upload.middleware';
 import { asyncHandler, ApiError } from '../utils/asyncHandler';
 import { generateQuizQuestions } from '../services/ai.service';
 import { extractTextFromPdf } from '../services/textExtract.service';
-import { prisma } from '../lib/prisma';
+import { createNotification } from '../services/notification.service';
 
 const router = Router();
 router.use(requireAuth);
@@ -42,13 +42,11 @@ router.post(
       questions = await generateQuizQuestions({ questionCount, imageBuffer: req.file.buffer, imageMimeType: mimeType });
     }
 
-    await prisma.notification.create({
-      data: {
-        userId: req.userId!,
-        title: 'AI Quiz Generated',
-        message: `AI generated ${questions.length} questions from "${req.file.originalname}". Review and save when ready.`,
-        type: 'AI',
-      },
+    await createNotification({
+      userId: req.userId!,
+      title: 'AI Quiz Generated',
+      message: `AI generated ${questions.length} questions from "${req.file.originalname}". Review and save when ready.`,
+      type: 'AI',
     });
 
     res.json({ questions });

@@ -7,6 +7,7 @@ import { answerOptionToDb, visibilityToDb } from '../utils/mappers';
 import { toQuizDto, toQuizAttemptDto } from '../utils/serializers';
 import { visibleToViewer, friendshipStatusBetween } from './friends.routes';
 import { computeNextRevision } from '../utils/spacedRepetition';
+import { createNotification } from '../services/notification.service';
 
 const router = Router();
 router.use(requireAuth);
@@ -242,14 +243,12 @@ router.post(
       update: { lastScore: scorePercent, intervalDays, nextRevisionDate },
     });
 
-    await prisma.notification.create({
-      data: {
-        userId,
-        title: 'Quiz Completed Successfully',
-        message: `You scored ${scorePercent.toFixed(0)}% on ${quiz.title}.`,
-        type: 'QUIZ',
-        relatedId: quiz.id,
-      },
+    await createNotification({
+      userId,
+      title: 'Quiz Completed Successfully',
+      message: `You scored ${scorePercent.toFixed(0)}% on ${quiz.title}.`,
+      type: 'QUIZ',
+      relatedId: quiz.id,
     });
 
     res.status(201).json({ attempt: toQuizAttemptDto(attempt), nextRevisionDate });

@@ -1,0 +1,2 @@
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart smart-study-backend.service, /usr/bin/journalctl -u smart-study-backend.service -n 100 --no-pager
+

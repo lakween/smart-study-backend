@@ -1,0 +1,23 @@
+[Unit]
+Description=Smart Study Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/smart-study-backend/current
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/smart-study-backend/shared/.env
+ExecStart=/usr/bin/node /opt/smart-study-backend/current/dist/src/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/smart-study-backend/shared/uploads
+
+[Install]
+WantedBy=multi-user.target

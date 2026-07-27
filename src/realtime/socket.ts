@@ -1,0 +1,46 @@
+import type { Server as HttpServer } from 'http';
+import { Server } from 'socket.io';
+
+import { env } from '../config/env';
+import { verifyToken } from '../utils/jwt';
+
+let io: Server | null = null;
+
+export function initializeSocket(httpServer: HttpServer): Server {
+  io = new Server(httpServer, {
+    cors: {
+      origin: env.corsOrigin === '*' ? true : env.corsOrigin.split(','),
+    },
+  });
+
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (typeof token !== 'string' || token.length === 0) {
+      next(new Error('Authentication required'));
+      return;
+    }
+
+    try {
+      socket.data.userId = verifyToken(token).userId;
+      next();
+    } catch {
+      next(new Error('Invalid or expired token'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    const userId = socket.data.userId as string;
+    socket.join(userRoom(userId));
+  });
+
+  return io;
+}
+
+export function emitNotification(userId: string, notification: unknown): void {
+  io?.to(userRoom(userId)).emit('notification:new', notification);
+}
+
+function userRoom(userId: string): string {
+  return `user:${userId}`;
+}
+
