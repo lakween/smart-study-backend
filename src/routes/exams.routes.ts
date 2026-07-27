@@ -6,6 +6,7 @@ import { asyncHandler, ApiError } from '../utils/asyncHandler';
 import { examTypeToDb } from '../utils/mappers';
 import { toExamDto } from '../utils/serializers';
 import { friendshipStatusBetween } from './friends.routes';
+import { createNotification } from '../services/notification.service';
 
 const router = Router();
 router.use(requireAuth);
@@ -112,15 +113,15 @@ router.post(
 
     if (body.type === 'friendExam') {
       const organizer = await prisma.user.findUniqueOrThrow({ where: { id: organizerId } });
-      await prisma.notification.createMany({
-        data: body.participantIds.map((userId) => ({
+      await Promise.all(
+        body.participantIds.map((userId) => createNotification({
           userId,
           title: 'Exam Invitation',
           message: `${organizer.fullName} invited you to "${exam.title}".`,
-          type: 'EXAM' as const,
+          type: 'EXAM',
           relatedId: exam.id,
-        })),
-      });
+        }))
+      );
     }
 
     res.status(201).json({ exam: toExamDto(exam) });

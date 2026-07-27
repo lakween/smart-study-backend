@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth } from '../middleware/auth.middleware';
 import { asyncHandler, ApiError } from '../utils/asyncHandler';
-import { toFriendDto, toNotificationDto } from '../utils/serializers';
+import { toFriendDto } from '../utils/serializers';
+import { createNotification } from '../services/notification.service';
 
 const router = Router();
 
@@ -136,14 +137,12 @@ router.post(
 
     await prisma.friendship.create({ data: { requesterId, addresseeId, status: 'PENDING' } });
     const requester = await prisma.user.findUniqueOrThrow({ where: { id: requesterId } });
-    await prisma.notification.create({
-      data: {
-        userId: addresseeId,
-        title: `Friend Request from ${requester.fullName}`,
-        message: `${requester.fullName} wants to connect with you.`,
-        type: 'FRIEND',
-        relatedId: requesterId,
-      },
+    await createNotification({
+      userId: addresseeId,
+      title: `Friend Request from ${requester.fullName}`,
+      message: `${requester.fullName} wants to connect with you.`,
+      type: 'FRIEND',
+      relatedId: requesterId,
     });
     res.status(201).json({ success: true });
   })
@@ -159,14 +158,12 @@ router.post(
     if (!friendship) throw new ApiError(404, 'Friend request not found');
     await prisma.friendship.update({ where: { id: friendship.id }, data: { status: 'ACCEPTED' } });
     const addressee = await prisma.user.findUniqueOrThrow({ where: { id: addresseeId } });
-    await prisma.notification.create({
-      data: {
-        userId: requesterId,
-        title: `${addressee.fullName} accepted your request`,
-        message: `You and ${addressee.fullName} are now friends.`,
-        type: 'FRIEND',
-        relatedId: addresseeId,
-      },
+    await createNotification({
+      userId: requesterId,
+      title: `${addressee.fullName} accepted your request`,
+      message: `You and ${addressee.fullName} are now friends.`,
+      type: 'FRIEND',
+      relatedId: addresseeId,
     });
     res.json({ success: true });
   })

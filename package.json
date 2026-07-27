@@ -2,11 +2,11 @@
   "name": "smart-study-backend",
   "version": "1.0.0",
   "description": "Smart Study App backend API",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
@@ -25,6 +25,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "pdf-parse": "^1.1.1",
+    "socket.io": "^4.8.1",
     "uuid": "^9.0.1",
     "zod": "^3.23.8"
   },
