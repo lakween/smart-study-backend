@@ -82,7 +82,7 @@ Open the backend repository on GitHub, then **Settings → Secrets and variables
   with `ssh-keyscan -H YOUR_SERVER_IP`, then compare its fingerprint with the
   server's `/etc/ssh/ssh_host_ed25519_key.pub` before saving it.
 
-Never commit the private key, `.env`, database URL, JWT secret, or Gemini key.
+Never commit the private key, `.env`, database URL, JWT secret, OpenAI API key, or Gemini API key.
 
 ## First deployment
 

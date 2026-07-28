@@ -28,7 +28,7 @@ export function toUserDto(
   };
 }
 
-export function toQuestionDto(q: any) {
+export function toQuestionDto(q: any, includeSolution = true) {
   return {
     id: q.id,
     text: q.text,
@@ -36,8 +36,7 @@ export function toQuestionDto(q: any) {
     optionB: q.optionB,
     optionC: q.optionC,
     optionD: q.optionD,
-    correctAnswer: q.correctAnswer,
-    explanation: q.explanation,
+    ...(includeSolution ? { correctAnswer: q.correctAnswer, explanation: q.explanation } : {}),
   };
 }
 
@@ -103,6 +102,7 @@ export function toQuizDto(
     avgScore?: number | null;
     lastAttemptDate?: Date | null;
     nextRevisionDate?: Date | null;
+    includeSolutions?: boolean;
   } = {}
 ) {
   return {
@@ -116,7 +116,7 @@ export function toQuizDto(
     allowCopy: q.allowCopy,
     isAiGenerated: q.isAiGenerated,
     timeLimitMinutes: q.timeLimitMinutes,
-    questions: (q.questions ?? []).map(toQuestionDto),
+    questions: (q.questions ?? []).map((question: any) => toQuestionDto(question, extra.includeSolutions ?? false)),
     ownerId: q.ownerId,
     attemptCount: extra.attemptCount ?? 0,
     bestScore: extra.bestScore ?? null,

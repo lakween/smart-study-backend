@@ -64,29 +64,35 @@ router.get(
   })
 );
 
-// GET /friends/search?q=name-or-email
+// GET /friends/search?q=name-or-email&page=1&limit=20
 router.get(
   '/search',
   asyncHandler(async (req, res) => {
     const userId = req.userId!;
     const q = String(req.query.q ?? '').trim();
-    if (q.length < 1) {
-      res.json({ users: [] });
-      return;
-    }
-    const results = await prisma.user.findMany({
-      where: {
-        id: { not: userId },
-        OR: [{ fullName: { contains: q, mode: 'insensitive' } }, { email: { contains: q, mode: 'insensitive' } }],
-      },
-      take: 20,
-    });
+    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const limit = Math.min(50, Math.max(1, Number.parseInt(String(req.query.limit ?? '20'), 10) || 20));
+    const where = {
+      id: { not: userId },
+      ...(q
+        ? { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }] }
+        : {}),
+    };
+    const [results, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.user.count({ where }),
+    ]);
     const dtos = await Promise.all(
       results.map(async (u) =>
         toFriendDto(u, await friendshipStatusBetween(userId, u.id), await mutualFriendsCount(userId, u.id))
       )
     );
-    res.json({ users: dtos });
+    res.json({ users: dtos, page, limit, total, hasMore: page * limit < total });
   })
 );
 

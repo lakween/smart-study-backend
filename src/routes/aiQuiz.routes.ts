@@ -19,28 +19,59 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 
 const generateBodySchema = z.object({
   questionCount: z.coerce.number().int().min(1).max(30).default(10),
+  difficulty: z.enum(['easy', 'medium', 'hard', 'mixed']).default('mixed'),
+  learningObjective: z.string().trim().max(200).optional(),
+  language: z.string().trim().min(2).max(50).default('English'),
+  avoidQuestions: z.preprocess((value) => {
+    if (typeof value !== 'string') return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }, z.array(z.string().trim().min(1).max(500)).max(30).default([])),
 });
+
+async function generateFromUpload(
+  file: Express.Multer.File,
+  body: z.infer<typeof generateBodySchema>,
+) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const common = {
+    questionCount: body.questionCount,
+    difficulty: body.difficulty,
+    learningObjective: body.learningObjective,
+    language: body.language,
+    avoidQuestions: body.avoidQuestions,
+  };
+
+  if (ext === '.pdf') {
+    const text = await extractTextFromPdf(file.buffer);
+    if (!text || text.length < 20) {
+      throw new ApiError(
+        422,
+        'Could not extract readable text from this PDF. Try a different file.',
+      );
+    }
+    return generateQuizQuestions({ ...common, text });
+  }
+
+  const mimeType = IMAGE_MIME_TYPES[ext];
+  if (!mimeType) throw new ApiError(400, 'Unsupported file type');
+  return generateQuizQuestions({
+    ...common,
+    imageBuffer: file.buffer,
+    imageMimeType: mimeType,
+  });
+}
 
 router.post(
   '/generate',
   uploadMemory.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, 'No file uploaded');
-    const { questionCount } = generateBodySchema.parse(req.body);
-    const ext = path.extname(req.file.originalname).toLowerCase();
-
-    let questions;
-    if (ext === '.pdf') {
-      const text = await extractTextFromPdf(req.file.buffer);
-      if (!text || text.length < 20) {
-        throw new ApiError(422, 'Could not extract readable text from this PDF. Try a different file.');
-      }
-      questions = await generateQuizQuestions({ questionCount, text });
-    } else {
-      const mimeType = IMAGE_MIME_TYPES[ext];
-      if (!mimeType) throw new ApiError(400, 'Unsupported file type');
-      questions = await generateQuizQuestions({ questionCount, imageBuffer: req.file.buffer, imageMimeType: mimeType });
-    }
+    const body = generateBodySchema.parse(req.body);
+    const questions = await generateFromUpload(req.file, body);
 
     await createNotification({
       userId: req.userId!,
@@ -51,6 +82,17 @@ router.post(
 
     res.json({ questions });
   })
+);
+
+router.post(
+  '/regenerate',
+  uploadMemory.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new ApiError(400, 'No file uploaded');
+    const body = generateBodySchema.parse({ ...req.body, questionCount: 1 });
+    const questions = await generateFromUpload(req.file, body);
+    res.json({ question: questions[0] });
+  }),
 );
 
 export default router;

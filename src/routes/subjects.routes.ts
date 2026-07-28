@@ -26,32 +26,16 @@ router.get(
     const visibilityFilter = req.query.visibility as string | undefined;
 
     const subjects = await prisma.subject.findMany({
+      where: {
+        ownerId: viewerId,
+        visibility: visibilityFilter ? visibilityToDb(visibilityFilter) : undefined,
+      },
       include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
       orderBy: { updatedAt: 'desc' },
     });
 
-    const visible: typeof subjects = [];
-    for (const s of subjects) {
-      if (s.ownerId === viewerId) {
-        visible.push(s);
-        continue;
-      }
-      if (s.visibility === 'PUBLIC') {
-        visible.push(s);
-        continue;
-      }
-      if (s.visibility === 'FRIENDS_ONLY') {
-        const status = await friendshipStatusBetween(viewerId, s.ownerId);
-        if (status === 'friends') visible.push(s);
-      }
-    }
-
-    const filtered = visibilityFilter
-      ? visible.filter((s) => s.visibility === visibilityToDb(visibilityFilter))
-      : visible;
-
     const dtos = await Promise.all(
-      filtered.map(async (s) => toSubjectDto(s, { avgScore: await subjectAvgScore(s.id, viewerId) }))
+      subjects.map(async (s) => toSubjectDto(s, { avgScore: await subjectAvgScore(s.id, viewerId) }))
     );
     res.json({ subjects: dtos });
   })
@@ -76,10 +60,12 @@ router.get(
   })
 );
 
+const cleanText = (value: string) => value.replace(/\0/g, '').trim();
+
 const createSchema = z.object({
-  name: z.string().min(2).max(100),
-  description: z.string().nullable().optional(),
-  visibility: z.string().default('private'),
+  name: z.string().transform(cleanText).pipe(z.string().min(2).max(100)),
+  description: z.string().transform(cleanText).nullable().optional(),
+  visibility: z.enum(['private', 'friendsOnly', 'public']).default('private'),
   allowCopy: z.boolean().default(false),
 });
 

@@ -10,13 +10,16 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "seed": "tsx prisma/seed.ts"
+    "db:migrate-and-seed": "prisma migrate dev && prisma db seed",
+    "seed": "tsx prisma/seed.ts",
+    "seed:test-users": "tsx prisma/seed-test-users.ts",
+    "test": "tsx --test src/utils/mappers.test.ts src/utils/spacedRepetition.test.ts src/middleware/error.middleware.test.ts src/middleware/rateLimit.middleware.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^2.13.0",
     "@prisma/client": "^5.20.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -24,6 +27,7 @@
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "openai": "^6.49.0",
     "pdf-parse": "^1.1.1",
     "socket.io": "^4.8.1",
     "uuid": "^9.0.1",

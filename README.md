@@ -1,6 +1,6 @@
 # Smart Study App — Backend
 
-Node.js + Express + TypeScript + Prisma (PostgreSQL) API powering the Smart Study Flutter app.
+Node.js + Express + TypeScript + Prisma (PostgreSQL) API powering the Smart Study Flutter app. Socket.IO provides authenticated, real-time in-app notification delivery.
 
 ## 1. Get a free Postgres database (Neon)
 
@@ -9,11 +9,10 @@ Node.js + Express + TypeScript + Prisma (PostgreSQL) API powering the Smart Stud
 3. On the project dashboard, copy the **connection string** (use the pooled connection, it looks like
    `postgresql://user:password@ep-xxxx.neon.tech/dbname?sslmode=require`).
 
-## 2. Get a free Gemini API key (for AI Quiz Generation)
+## 2. Configure an AI provider (for AI Quiz Generation)
 
-1. Go to https://aistudio.google.com/app/apikey
-2. Sign in with a Google account and click "Create API key".
-3. Copy the key.
+Choose OpenAI or Gemini through `AI_PROVIDER`. Create the corresponding key at
+https://platform.openai.com/api-keys or https://aistudio.google.com/apikey.
 
 ## 3. Configure environment
 
@@ -24,7 +23,9 @@ cp .env.example .env
 Edit `.env` and fill in:
 - `DATABASE_URL` — the Neon connection string from step 1
 - `JWT_SECRET` — any long random string (e.g. run `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`)
-- `GEMINI_API_KEY` — the key from step 2
+- `AI_PROVIDER` — `openai` or `gemini`
+- `OPENAI_API_KEY` / `OPENAI_MODEL` — OpenAI credentials and model
+- `GEMINI_API_KEY` / `GEMINI_MODEL` — Gemini credentials and model
 
 ## 4. Install, migrate, seed
 
@@ -51,13 +52,16 @@ The API listens on `http://localhost:4000` (health check: `GET /health`).
 
 ```
 src/
+  server.ts              HTTP and Socket.IO server bootstrap
   config/env.ts          Environment variable loading/validation
   lib/prisma.ts          Shared Prisma client instance
   middleware/            auth (JWT), file upload (multer), error handling
   routes/                One file per resource (auth, users, subjects, topics,
                           documents, quizzes, aiQuiz, exams, friends,
                           notifications, dashboard)
-  services/               ai.service.ts (Gemini), textExtract.service.ts (PDF)
+  services/               ai.service.ts (OpenAI/Gemini), textExtract.service.ts (PDF)
+                           notification.service.ts (persist + real-time emit)
+  realtime/               authenticated Socket.IO rooms and event emission
   utils/                  jwt, mappers (enum <-> wire format), serializers
                           (DB row -> API DTO), spacedRepetition, userStats
 prisma/
@@ -87,6 +91,81 @@ All endpoints except `/health`, `/auth/register`, `/auth/login`, `/auth/forgot-p
   `DELETE /friends/request/:userId`, `DELETE /friends/:userId`
 - `GET/POST /notifications`, `POST /notifications/read-all`, `POST /notifications/:id/read`, `DELETE /notifications/:id`
 - `GET /dashboard/home`, `GET /dashboard/performance?period=week|month|all`
+
+## Real-time in-app notifications
+
+The REST notification endpoints remain the source for initial history, read
+state, deletion, and manual refresh. After authentication, the Flutter app also
+opens a Socket.IO connection using the JWT in `auth.token`.
+
+The server verifies the token, joins the socket to the private room
+`user:<userId>`, and emits `notification:new` after the notification record is
+stored. Friend requests and acceptances, exam invitations, quiz completion,
+and AI quiz generation use this shared notification service.
+
+This is foreground in-app delivery, not operating-system push. It updates an
+open app without polling or restarting, but it cannot notify a closed app.
+
+When the public REST API uses the `/smart-study` prefix, configure the client
+and reverse proxy to use the Socket.IO path `/smart-study/socket.io`. The Nginx
+upgrade-header example is included in [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
+## Production deployment
+
+Pushes to `main` are validated and deployed by `.github/workflows/deploy.yml`.
+The workflow uses versioned releases, shared `.env` and uploads, Prisma
+migrations, systemd restart, a health check, and application rollback. Follow
+[`DEPLOYMENT.md`](DEPLOYMENT.md) before enabling the workflow on an Ubuntu
+server.
+
+## How spaced repetition works
+
+Smart Study schedules quiz revisions so learners review material more often when
+their recall is weak and less often as their recall improves.
+
+The scheduling algorithm runs after every successful
+`POST /quizzes/:id/attempts` submission:
+
+1. The backend calculates the quiz score.
+2. It reads the user's existing `SpacedRepetition` record for that quiz.
+3. `computeNextRevision()` selects the next interval from
+   `[1, 3, 7, 14, 30]` days.
+4. The backend creates or updates the record with `lastScore`, `intervalDays`,
+   and `nextRevisionDate`.
+5. Dashboard and topic APIs return the calculated date to the Flutter app.
+
+The pass threshold is 60 percent:
+
+| Result | Next interval |
+|---|---|
+| First attempt scoring 60% or higher | 1 day |
+| Another passing attempt | Advance to 3, 7, 14, then 30 days |
+| Score below 60% | Reset to 1 day |
+| Passing after reaching 30 days | Remain at 30 days |
+
+Example:
+
+```text
+75% -> revise in 1 day
+80% -> revise in 3 days
+90% -> revise in 7 days
+45% -> reset and revise in 1 day
+```
+
+Implementation and consumers:
+
+- Algorithm: `src/utils/spacedRepetition.ts`
+- Attempt integration: `src/routes/quizzes.routes.ts`
+- Database record: `SpacedRepetition` in `prisma/schema.prisma`
+- Home revision queue: `GET /dashboard/home`
+- Upcoming revisions and missed-revision insights:
+  `GET /dashboard/performance`
+- Topic revision summary: `GET /topics?subjectId=...`
+
+The Flutter app displays this information on the home dashboard, performance
+dashboard, topic details, and topic cards. The current Settings switch labelled
+"Spaced Repetition" is UI-only; turning it off does not yet disable backend
+scheduling.
 
 ## Notes
 

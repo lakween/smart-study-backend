@@ -63,11 +63,13 @@ router.get(
   })
 );
 
+const cleanText = (value: string) => value.replace(/\0/g, '').trim();
+
 const createSchema = z.object({
   subjectId: z.string().uuid(),
-  name: z.string().min(2),
-  description: z.string().nullable().optional(),
-  visibility: z.string().default('private'),
+  name: z.string().transform(cleanText).pipe(z.string().min(2).max(100)),
+  description: z.string().transform(cleanText).nullable().optional(),
+  visibility: z.enum(['private', 'friendsOnly', 'public']).default('private'),
   allowCopy: z.boolean().default(false),
 });
 

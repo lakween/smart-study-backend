@@ -62,27 +62,33 @@ enum NotificationType {
   GENERAL
 }
 
-model User {
-  id               String     @id @default(uuid())
-  fullName         String
-  email            String     @unique
-  passwordHash     String
-  bio              String?
-  university       String?
-  studyLevel       StudyLevel @default(UNDERGRADUATE)
-  profileImageUrl  String?
-  passwordResetToken String?
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+enum QuizPracticeMode {
+  TIMED
+  UNTIMED
+}
 
-  subjects         Subject[]
-  documents        Document[]
-  quizzes          Quiz[]
-  quizAttempts     QuizAttempt[]
-  spacedRepetitions SpacedRepetition[]
-  organizedExams   Exam[]              @relation("ExamOrganizer")
+model User {
+  id                 String     @id @default(uuid())
+  fullName           String
+  email              String     @unique
+  passwordHash       String
+  bio                String?
+  university         String?
+  studyLevel         StudyLevel @default(UNDERGRADUATE)
+  profileImageUrl    String?
+  passwordResetToken String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  subjects           Subject[]
+  documents          Document[]
+  quizzes            Quiz[]
+  quizAttempts       QuizAttempt[]
+  quizSessions       QuizSession[]
+  spacedRepetitions  SpacedRepetition[]
+  organizedExams     Exam[]             @relation("ExamOrganizer")
   examParticipations ExamParticipant[]
-  notifications    Notification[]
+  notifications      Notification[]
 
   friendshipsSent     Friendship[] @relation("FriendshipRequester")
   friendshipsReceived Friendship[] @relation("FriendshipAddressee")
@@ -134,7 +140,7 @@ model Topic {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  subject           Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  subject           Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   documents         Document[]
   quizzes           Quiz[]
   exams             Exam[]
@@ -176,31 +182,32 @@ model Quiz {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
-  subject           Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  topic             Topic               @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  owner             User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  subject           Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic             Topic              @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  owner             User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   questions         Question[]
   attempts          QuizAttempt[]
+  sessions          QuizSession[]
   spacedRepetitions SpacedRepetition[]
 
   @@map("quizzes")
 }
 
 model Question {
-  id             String       @id @default(uuid())
-  quizId         String?
-  examId         String?
-  order          Int          @default(0)
-  text           String
-  optionA        String
-  optionB        String
-  optionC        String
-  optionD        String
-  correctAnswer  AnswerOption
-  explanation    String?
+  id            String       @id @default(uuid())
+  quizId        String?
+  examId        String?
+  order         Int          @default(0)
+  text          String
+  optionA       String
+  optionB       String
+  optionC       String
+  optionD       String
+  correctAnswer AnswerOption
+  explanation   String?
 
-  quiz Quiz? @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  exam Exam? @relation(fields: [examId], references: [id], onDelete: Cascade)
+  quiz    Quiz?            @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  exam    Exam?            @relation(fields: [examId], references: [id], onDelete: Cascade)
   answers QuestionAnswer[]
 
   @@map("questions")
@@ -214,13 +221,35 @@ model QuizAttempt {
   totalQuestions   Int
   scorePercent     Float
   timeTakenSeconds Int?
+  sessionId        String?  @unique
   attemptedAt      DateTime @default(now())
 
   quiz    Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
   user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session QuizSession?     @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   answers QuestionAnswer[]
 
+  @@index([userId, attemptedAt])
+  @@index([quizId, userId])
   @@map("quiz_attempts")
+}
+
+model QuizSession {
+  id          String           @id @default(uuid())
+  quizId      String
+  userId      String
+  mode        QuizPracticeMode
+  startedAt   DateTime         @default(now())
+  deadlineAt  DateTime?
+  submittedAt DateTime?
+
+  quiz    Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempt QuizAttempt?
+
+  @@index([userId, quizId, startedAt])
+  @@index([deadlineAt])
+  @@map("quiz_sessions")
 }
 
 model QuestionAnswer {
@@ -237,14 +266,15 @@ model QuestionAnswer {
 }
 
 model SpacedRepetition {
-  id               String   @id @default(uuid())
-  userId           String
-  quizId           String
-  topicId          String
-  lastScore        Float
-  intervalDays     Int      @default(1)
-  nextRevisionDate DateTime
-  updatedAt        DateTime @updatedAt
+  id                   String    @id @default(uuid())
+  userId               String
+  quizId               String
+  topicId              String
+  lastScore            Float
+  intervalDays         Int       @default(1)
+  nextRevisionDate     DateTime
+  reminderRevisionDate DateTime?
+  updatedAt            DateTime  @updatedAt
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   quiz  Quiz  @relation(fields: [quizId], references: [id], onDelete: Cascade)
