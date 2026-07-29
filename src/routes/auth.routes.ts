@@ -9,8 +9,32 @@ import { requireAuth } from '../middleware/auth.middleware';
 import { studyLevelToDb } from '../utils/mappers';
 import { toUserDto } from '../utils/serializers';
 import { getUserStats } from '../utils/userStats';
+import { env } from '../config/env';
 
 const router = Router();
+
+const hashToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
+
+async function issueSession(userId: string) {
+  const token = signToken({ userId });
+  const refreshToken = crypto.randomBytes(48).toString('base64url');
+  await prisma.$transaction([
+    prisma.refreshToken.deleteMany({
+      where: {
+        userId,
+        OR: [{ expiresAt: { lt: new Date() } }, { revokedAt: { not: null } }],
+      },
+    }),
+    prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash: hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + env.refreshTokenExpiresDays * 24 * 60 * 60_000),
+      },
+    }),
+  ]);
+  return { token, refreshToken };
+}
 
 const registerSchema = z.object({
   fullName: z.string().min(2),
@@ -38,9 +62,9 @@ router.post(
       },
     });
 
-    const token = signToken({ userId: user.id });
+    const session = await issueSession(user.id);
     const stats = await getUserStats(user.id);
-    res.status(201).json({ token, user: toUserDto(user, stats) });
+    res.status(201).json({ ...session, user: toUserDto(user, stats) });
   })
 );
 
@@ -59,10 +83,56 @@ router.post(
     const valid = await bcrypt.compare(body.password, user.passwordHash);
     if (!valid) throw new ApiError(401, 'Invalid email or password');
 
-    const token = signToken({ userId: user.id });
+    const session = await issueSession(user.id);
     const stats = await getUserStats(user.id);
-    res.json({ token, user: toUserDto(user, stats) });
+    res.json({ ...session, user: toUserDto(user, stats) });
   })
+);
+
+const refreshSchema = z.object({ refreshToken: z.string().min(20) });
+
+router.post(
+  '/refresh',
+  asyncHandler(async (req, res) => {
+    const { refreshToken } = refreshSchema.parse(req.body);
+    const stored = await prisma.refreshToken.findUnique({
+      where: { tokenHash: hashToken(refreshToken) },
+    });
+    if (!stored || stored.revokedAt || stored.expiresAt <= new Date()) {
+      throw new ApiError(401, 'Invalid or expired refresh token');
+    }
+
+    const nextRefreshToken = crypto.randomBytes(48).toString('base64url');
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.refreshToken.updateMany({
+        where: { id: stored.id, revokedAt: null, expiresAt: { gt: new Date() } },
+        data: { revokedAt: new Date() },
+      });
+      if (claimed.count !== 1) throw new ApiError(401, 'Invalid or expired refresh token');
+      await tx.refreshToken.create({
+        data: {
+          userId: stored.userId,
+          tokenHash: hashToken(nextRefreshToken),
+          expiresAt: new Date(Date.now() + env.refreshTokenExpiresDays * 24 * 60 * 60_000),
+        },
+      });
+    });
+    res.json({ token: signToken({ userId: stored.userId }), refreshToken: nextRefreshToken });
+  }),
+);
+
+router.post(
+  '/logout',
+  asyncHandler(async (req, res) => {
+    const parsed = refreshSchema.safeParse(req.body);
+    if (parsed.success) {
+      await prisma.refreshToken.updateMany({
+        where: { tokenHash: hashToken(parsed.data.refreshToken), revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
+    res.json({ success: true });
+  }),
 );
 
 router.get(
@@ -93,14 +163,27 @@ router.post(
       return;
     }
 
-    const resetToken = crypto.randomBytes(24).toString('hex');
-    await prisma.user.update({ where: { id: user.id }, data: { passwordResetToken: resetToken } });
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashToken(resetToken);
+    const passwordResetExpiresAt = new Date(Date.now() + env.passwordResetTtlMinutes * 60_000);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: tokenHash, passwordResetExpiresAt },
+    });
 
-    console.log(`\n[Password Reset] Reset token for ${user.email}: ${resetToken}\n`);
+    if (!env.isProduction) {
+      console.log(`\n[Password Reset] Reset token for ${user.email}: ${resetToken}\n`);
+    } else {
+      console.warn(JSON.stringify({
+        level: 'warn',
+        event: 'password_reset_delivery_not_configured',
+        userId: user.id,
+      }));
+    }
 
     res.json({
       success: true,
-      devResetToken: process.env.NODE_ENV === 'production' ? undefined : resetToken,
+      devResetToken: env.isProduction ? undefined : resetToken,
     });
   })
 );
@@ -116,14 +199,22 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, token, newPassword } = resetPasswordSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-    if (!user || !user.passwordResetToken || user.passwordResetToken !== token) {
+    const tokenHash = hashToken(token);
+    if (!user || !user.passwordResetToken || !user.passwordResetExpiresAt ||
+        user.passwordResetToken !== tokenHash || user.passwordResetExpiresAt <= new Date()) {
       throw new ApiError(400, 'Invalid or expired reset token');
     }
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { passwordHash, passwordResetToken: null },
-    });
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash, passwordResetToken: null, passwordResetExpiresAt: null },
+      }),
+      prisma.refreshToken.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
     res.json({ success: true });
   })
 );

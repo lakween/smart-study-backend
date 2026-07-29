@@ -1,0 +1,14 @@
+CREATE INDEX "friendships_requesterId_status_idx" ON "friendships"("requesterId", "status");
+CREATE INDEX "friendships_addresseeId_status_idx" ON "friendships"("addresseeId", "status");
+CREATE INDEX "subjects_ownerId_updatedAt_idx" ON "subjects"("ownerId", "updatedAt");
+CREATE INDEX "topics_subjectId_createdAt_idx" ON "topics"("subjectId", "createdAt");
+CREATE INDEX "documents_ownerId_uploadedAt_idx" ON "documents"("ownerId", "uploadedAt");
+CREATE INDEX "documents_subjectId_uploadedAt_idx" ON "documents"("subjectId", "uploadedAt");
+CREATE INDEX "quizzes_ownerId_createdAt_idx" ON "quizzes"("ownerId", "createdAt");
+CREATE INDEX "quizzes_subjectId_createdAt_idx" ON "quizzes"("subjectId", "createdAt");
+CREATE INDEX "quizzes_topicId_createdAt_idx" ON "quizzes"("topicId", "createdAt");
+CREATE INDEX "quizzes_visibility_createdAt_idx" ON "quizzes"("visibility", "createdAt");
+CREATE INDEX "questions_quizId_order_idx" ON "questions"("quizId", "order");
+CREATE INDEX "spaced_repetitions_userId_nextRevisionDate_idx" ON "spaced_repetitions"("userId", "nextRevisionDate");
+CREATE INDEX "exams_organizerId_createdAt_idx" ON "exams"("organizerId", "createdAt");
+CREATE INDEX "notifications_userId_createdAt_idx" ON "notifications"("userId", "createdAt");

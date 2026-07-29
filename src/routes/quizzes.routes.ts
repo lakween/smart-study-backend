@@ -35,38 +35,114 @@ async function quizExtras(quizId: string, userId: string) {
 
 const quizInclude = { subject: true, topic: true, questions: true } as const;
 
+async function requireVisibleQuiz(quizId: string, viewerId: string) {
+  const quiz = await prisma.quiz.findUnique({ where: { id: quizId }, include: quizInclude });
+  if (!quiz) throw new ApiError(404, 'Quiz not found');
+  const isFriend = (await friendshipStatusBetween(viewerId, quiz.ownerId)) === 'friends';
+  if (!visibleToViewer(quiz.visibility, quiz.ownerId, viewerId, isFriend)) {
+    throw new ApiError(403, 'You do not have access to this quiz');
+  }
+  return quiz;
+}
+
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
-    const filter = req.query.filter as string | undefined; // mine | friends | public | ai
-    const subjectId = req.query.subjectId as string | undefined;
-    const topicId = req.query.topicId as string | undefined;
+    const query = z.object({
+      filter: z.enum(['mine', 'friends', 'public', 'ai']).default('mine'),
+      subjectId: z.string().uuid().optional(),
+      topicId: z.string().uuid().optional(),
+      search: z.string().trim().max(100).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(50).default(20),
+    }).parse(req.query);
+    const filter = query.filter;
+    const friendships = filter === 'mine' || filter === 'public'
+      ? []
+      : await prisma.friendship.findMany({
+          where: {
+            status: 'ACCEPTED',
+            OR: [{ requesterId: viewerId }, { addresseeId: viewerId }],
+          },
+          select: { requesterId: true, addresseeId: true },
+        });
+    const friendIds = friendships.map((friendship) =>
+      friendship.requesterId === viewerId ? friendship.addresseeId : friendship.requesterId,
+    );
 
-    const quizzes = await prisma.quiz.findMany({
-      where: { subjectId, topicId },
+    const accessWhere = {
+      OR: [
+        { ownerId: viewerId },
+        { visibility: 'PUBLIC' as const },
+        ...(friendIds.length > 0
+          ? [{ visibility: 'FRIENDS_ONLY' as const, ownerId: { in: friendIds } }]
+          : []),
+      ],
+    };
+    const filterWhere = filter === 'mine'
+      ? { ownerId: viewerId }
+      : filter === 'friends'
+        ? { ownerId: { in: friendIds }, visibility: 'FRIENDS_ONLY' as const }
+        : filter === 'public'
+          ? { visibility: 'PUBLIC' as const, ownerId: { not: viewerId } }
+          : { isAiGenerated: true, ...accessWhere };
+    const where = {
+      subjectId: query.subjectId,
+      topicId: query.topicId,
+      ...(query.search ? { title: { contains: query.search, mode: 'insensitive' as const } } : {}),
+      ...filterWhere,
+    };
+
+    const [quizzes, total] = await prisma.$transaction([
+      prisma.quiz.findMany({
+      where,
       include: quizInclude,
       orderBy: { createdAt: 'desc' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      }),
+      prisma.quiz.count({ where }),
+    ]);
+
+    const quizIds = quizzes.map((quiz) => quiz.id);
+    const [attemptStats, repetitions] = quizIds.length === 0
+      ? [[], []] as const
+      : await Promise.all([
+          prisma.quizAttempt.groupBy({
+            by: ['quizId'],
+            where: { userId: viewerId, quizId: { in: quizIds } },
+            _count: { _all: true },
+            _max: { scorePercent: true, attemptedAt: true },
+            _avg: { scorePercent: true },
+          }),
+          prisma.spacedRepetition.findMany({
+            where: { userId: viewerId, quizId: { in: quizIds } },
+            select: { quizId: true, nextRevisionDate: true },
+          }),
+        ]);
+    const statsByQuiz = new Map(attemptStats.map((stats) => [stats.quizId, stats]));
+    const repetitionByQuiz = new Map(repetitions.map((repetition) => [repetition.quizId, repetition]));
+    const dtos = quizzes.map((quiz) => {
+      const stats = statsByQuiz.get(quiz.id);
+      return toQuizDto(quiz, {
+        attemptCount: stats?._count._all ?? 0,
+        bestScore: stats?._max.scorePercent ?? null,
+        avgScore: stats?._avg.scorePercent ?? null,
+        lastAttemptDate: stats?._max.attemptedAt ?? null,
+        nextRevisionDate: repetitionByQuiz.get(quiz.id)?.nextRevisionDate ?? null,
+        includeSolutions: quiz.ownerId === viewerId,
+      });
     });
-
-    const visible = [];
-    for (const q of quizzes) {
-      if (q.ownerId === viewerId) {
-        visible.push(q);
-        continue;
-      }
-      const isFriend = (await friendshipStatusBetween(viewerId, q.ownerId)) === 'friends';
-      if (visibleToViewer(q.visibility, q.ownerId, viewerId, isFriend)) visible.push(q);
-    }
-
-    let filtered = visible;
-    if (filter === 'mine') filtered = visible.filter((q) => q.ownerId === viewerId);
-    else if (filter === 'friends') filtered = visible.filter((q) => q.ownerId !== viewerId && q.visibility !== 'PUBLIC');
-    else if (filter === 'public') filtered = visible.filter((q) => q.visibility === 'PUBLIC');
-    else if (filter === 'ai') filtered = visible.filter((q) => q.isAiGenerated);
-
-    const dtos = await Promise.all(filtered.map(async (q) => toQuizDto(q, await quizExtras(q.id, viewerId))));
-    res.json({ quizzes: dtos });
+    res.json({
+      quizzes: dtos,
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        hasMore: query.page * query.limit < total,
+      },
+    });
   })
 );
 
@@ -74,34 +150,41 @@ router.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
-    const quiz = await prisma.quiz.findUnique({ where: { id: req.params.id }, include: quizInclude });
-    if (!quiz) throw new ApiError(404, 'Quiz not found');
-    const isFriend = (await friendshipStatusBetween(viewerId, quiz.ownerId)) === 'friends';
-    if (!visibleToViewer(quiz.visibility, quiz.ownerId, viewerId, isFriend)) {
-      throw new ApiError(403, 'You do not have access to this quiz');
-    }
-    res.json({ quiz: toQuizDto(quiz, await quizExtras(quiz.id, viewerId)) });
+    const quiz = await requireVisibleQuiz(req.params.id, viewerId);
+    res.json({ quiz: toQuizDto(quiz, {
+      ...await quizExtras(quiz.id, viewerId),
+      includeSolutions: quiz.ownerId === viewerId,
+    }) });
   })
 );
 
+const cleanText = (value: string) => value.replace(/\0/g, '').trim();
+const visibilityLevel = (value: string) => {
+  if (value === 'PUBLIC' || value === 'public') return 2;
+  if (value === 'FRIENDS_ONLY' || value === 'friendsOnly') return 1;
+  return 0;
+};
+const requiredText = (minimum: number, maximum: number) =>
+  z.string().transform(cleanText).pipe(z.string().min(minimum).max(maximum));
+
 const questionSchema = z.object({
-  text: z.string().min(5),
-  optionA: z.string().min(1),
-  optionB: z.string().min(1),
-  optionC: z.string().min(1),
-  optionD: z.string().min(1),
+  text: requiredText(5, 500),
+  optionA: requiredText(1, 250),
+  optionB: requiredText(1, 250),
+  optionC: requiredText(1, 250),
+  optionD: requiredText(1, 250),
   correctAnswer: z.enum(['A', 'B', 'C', 'D', 'a', 'b', 'c', 'd']),
-  explanation: z.string().nullable().optional(),
+  explanation: z.string().transform(cleanText).nullable().optional(),
 });
 
 const createQuizSchema = z.object({
-  title: z.string().min(3),
+  title: requiredText(3, 150),
   subjectId: z.string().uuid(),
   topicId: z.string().uuid(),
-  visibility: z.string().default('private'),
+  visibility: z.enum(['private', 'friendsOnly', 'public']).default('private'),
   allowCopy: z.boolean().default(false),
   isAiGenerated: z.boolean().default(false),
-  timeLimitMinutes: z.number().int().positive().nullable().optional(),
+  timeLimitMinutes: z.number().int().min(1).max(180).nullable().optional(),
   questions: z.array(questionSchema).min(1),
 });
 
@@ -109,6 +192,22 @@ router.post(
   '/',
   asyncHandler(async (req, res) => {
     const body = createQuizSchema.parse(req.body);
+    const topic = await prisma.topic.findUnique({
+      where: { id: body.topicId },
+      include: { subject: true },
+    });
+    if (!topic || topic.subjectId !== body.subjectId) {
+      throw new ApiError(400, 'The selected topic does not belong to this subject');
+    }
+    if (topic.subject.ownerId !== req.userId) {
+      throw new ApiError(403, 'Only the subject owner can create quizzes');
+    }
+    if (visibilityLevel(body.visibility) > Math.min(
+      visibilityLevel(topic.visibility),
+      visibilityLevel(topic.subject.visibility),
+    )) {
+      throw new ApiError(400, 'Quiz visibility cannot be broader than its topic and subject');
+    }
     const quiz = await prisma.quiz.create({
       data: {
         title: body.title,
@@ -134,7 +233,7 @@ router.post(
       },
       include: quizInclude,
     });
-    res.status(201).json({ quiz: toQuizDto(quiz) });
+    res.status(201).json({ quiz: toQuizDto(quiz, { includeSolutions: true }) });
   })
 );
 
@@ -148,6 +247,26 @@ router.patch(
     if (existing.ownerId !== req.userId) throw new ApiError(403, 'Only the owner can edit this quiz');
 
     const body = updateQuizSchema.parse(req.body);
+
+    const nextSubjectId = body.subjectId ?? existing.subjectId;
+    const nextTopicId = body.topicId ?? existing.topicId;
+    const topic = await prisma.topic.findUnique({
+      where: { id: nextTopicId },
+      include: { subject: true },
+    });
+    if (!topic || topic.subjectId !== nextSubjectId) {
+      throw new ApiError(400, 'The selected topic does not belong to this subject');
+    }
+    if (topic.subject.ownerId !== req.userId) {
+      throw new ApiError(403, 'Only the subject owner can move or edit this quiz');
+    }
+    const nextVisibility = body.visibility ?? existing.visibility;
+    if (visibilityLevel(nextVisibility) > Math.min(
+      visibilityLevel(topic.visibility),
+      visibilityLevel(topic.subject.visibility),
+    )) {
+      throw new ApiError(400, 'Quiz visibility cannot be broader than its topic and subject');
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.quiz.update({
@@ -181,7 +300,10 @@ router.patch(
     });
 
     const updated = await prisma.quiz.findUniqueOrThrow({ where: { id: req.params.id }, include: quizInclude });
-    res.json({ quiz: toQuizDto(updated, await quizExtras(updated.id, req.userId!)) });
+    res.json({ quiz: toQuizDto(updated, {
+      ...await quizExtras(updated.id, req.userId!),
+      includeSolutions: true,
+    }) });
   })
 );
 
@@ -197,18 +319,70 @@ router.delete(
 );
 
 const submitAttemptSchema = z.object({
-  answers: z.array(z.object({ questionId: z.string().uuid(), selectedAnswer: z.enum(['A', 'B', 'C', 'D']).nullable() })),
-  timeTakenSeconds: z.number().int().nonnegative().nullable().optional(),
+  sessionId: z.string().uuid(),
+  answers: z.array(z.object({ questionId: z.string().uuid(), selectedAnswer: z.enum(['A', 'B', 'C', 'D']).nullable() })).max(500),
+}).superRefine((body, ctx) => {
+  const ids = body.answers.map((answer) => answer.questionId);
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['answers'], message: 'Each question can only be answered once' });
+  }
 });
+
+const startAttemptSchema = z.object({ mode: z.enum(['timed', 'untimed']) });
+
+router.post(
+  '/:id/sessions',
+  asyncHandler(async (req, res) => {
+    const userId = req.userId!;
+    const quiz = await requireVisibleQuiz(req.params.id, userId);
+    const body = startAttemptSchema.parse(req.body);
+    if (body.mode === 'timed' && quiz.timeLimitMinutes == null) {
+      throw new ApiError(400, 'This quiz does not have a timed practice mode');
+    }
+
+    const startedAt = new Date();
+    const deadlineAt = body.mode === 'timed'
+      ? new Date(startedAt.getTime() + quiz.timeLimitMinutes! * 60_000)
+      : null;
+    const session = await prisma.quizSession.create({
+      data: {
+        quizId: quiz.id,
+        userId,
+        mode: body.mode === 'timed' ? 'TIMED' : 'UNTIMED',
+        startedAt,
+        deadlineAt,
+      },
+    });
+
+    res.status(201).json({
+      session: {
+        id: session.id,
+        mode: body.mode,
+        startedAt: session.startedAt,
+        deadlineAt: session.deadlineAt,
+      },
+    });
+  }),
+);
 
 router.post(
   '/:id/attempts',
   asyncHandler(async (req, res) => {
     const userId = req.userId!;
-    const quiz = await prisma.quiz.findUnique({ where: { id: req.params.id }, include: { questions: true } });
-    if (!quiz) throw new ApiError(404, 'Quiz not found');
-
     const body = submitAttemptSchema.parse(req.body);
+    const quiz = await requireVisibleQuiz(req.params.id, userId);
+    const session = await prisma.quizSession.findUnique({ where: { id: body.sessionId } });
+    if (!session || session.quizId !== quiz.id || session.userId !== userId) {
+      throw new ApiError(404, 'Practice session not found');
+    }
+    if (session.submittedAt) throw new ApiError(409, 'This practice session was already submitted');
+
+    const submittedAt = new Date();
+    const submissionGraceMs = 30_000;
+    if (session.deadlineAt && submittedAt.getTime() > session.deadlineAt.getTime() + submissionGraceMs) {
+      throw new ApiError(409, 'This timed practice session has expired');
+    }
+
     const answerByQuestion = new Map(body.answers.map((a) => [a.questionId, a.selectedAnswer]));
 
     let correctCount = 0;
@@ -222,36 +396,67 @@ router.post(
     const totalQuestions = quiz.questions.length;
     const scorePercent = totalQuestions === 0 ? 0 : (correctCount / totalQuestions) * 100;
 
-    const attempt = await prisma.quizAttempt.create({
-      data: {
-        quizId: quiz.id,
-        userId,
-        correctCount,
-        totalQuestions,
-        scorePercent,
-        timeTakenSeconds: body.timeTakenSeconds ?? null,
-        answers: { create: answerRows },
-      },
-      include: { quiz: true, answers: true },
-    });
+    const effectiveEnd = session.deadlineAt && submittedAt > session.deadlineAt ? session.deadlineAt : submittedAt;
+    const timeTakenSeconds = Math.max(0, Math.floor((effectiveEnd.getTime() - session.startedAt.getTime()) / 1000));
 
     const existingRepetition = await prisma.spacedRepetition.findUnique({ where: { userId_quizId: { userId, quizId: quiz.id } } });
     const { intervalDays, nextRevisionDate } = computeNextRevision(existingRepetition?.intervalDays ?? null, scorePercent);
-    await prisma.spacedRepetition.upsert({
-      where: { userId_quizId: { userId, quizId: quiz.id } },
-      create: { userId, quizId: quiz.id, topicId: quiz.topicId, lastScore: scorePercent, intervalDays, nextRevisionDate },
-      update: { lastScore: scorePercent, intervalDays, nextRevisionDate },
+
+    const attempt = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.quizSession.updateMany({
+        where: { id: session.id, submittedAt: null },
+        data: { submittedAt },
+      });
+      if (claimed.count !== 1) throw new ApiError(409, 'This practice session was already submitted');
+
+      const createdAttempt = await tx.quizAttempt.create({
+        data: {
+          quizId: quiz.id,
+          userId,
+          sessionId: session.id,
+          correctCount,
+          totalQuestions,
+          scorePercent,
+          timeTakenSeconds,
+          answers: { create: answerRows },
+        },
+        include: { quiz: true, answers: true },
+      });
+
+      await tx.spacedRepetition.upsert({
+        where: { userId_quizId: { userId, quizId: quiz.id } },
+        create: { userId, quizId: quiz.id, topicId: quiz.topicId, lastScore: scorePercent, intervalDays, nextRevisionDate },
+        update: { lastScore: scorePercent, intervalDays, nextRevisionDate },
+      });
+      return createdAttempt;
     });
 
-    await createNotification({
-      userId,
-      title: 'Quiz Completed Successfully',
-      message: `You scored ${scorePercent.toFixed(0)}% on ${quiz.title}.`,
-      type: 'QUIZ',
-      relatedId: quiz.id,
-    });
+    try {
+      await createNotification({
+        userId,
+        title: 'Quiz Completed Successfully',
+        message: `You scored ${scorePercent.toFixed(0)}% on ${quiz.title}.`,
+        type: 'QUIZ',
+        relatedId: quiz.id,
+      });
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'quiz_completion_notification_failed',
+        userId,
+        quizId: quiz.id,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
 
-    res.status(201).json({ attempt: toQuizAttemptDto(attempt), nextRevisionDate });
+    res.status(201).json({
+      attempt: toQuizAttemptDto(attempt),
+      quiz: toQuizDto(quiz, {
+        ...await quizExtras(quiz.id, userId),
+        includeSolutions: true,
+      }),
+      nextRevisionDate,
+    });
   })
 );
 
@@ -260,11 +465,14 @@ router.get(
   asyncHandler(async (req, res) => {
     const attempt = await prisma.quizAttempt.findUnique({
       where: { id: req.params.attemptId },
-      include: { quiz: true, answers: true },
+      include: { quiz: { include: { subject: true, topic: true, questions: true } }, answers: true },
     });
     if (!attempt || attempt.quizId !== req.params.id) throw new ApiError(404, 'Attempt not found');
     if (attempt.userId !== req.userId) throw new ApiError(403, 'You do not have access to this attempt');
-    res.json({ attempt: toQuizAttemptDto(attempt) });
+    res.json({
+      attempt: toQuizAttemptDto(attempt),
+      quiz: toQuizDto(attempt.quiz, { includeSolutions: true }),
+    });
   })
 );
 
