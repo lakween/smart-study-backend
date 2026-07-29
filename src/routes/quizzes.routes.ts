@@ -259,7 +259,25 @@ router.post(
     });
     if (!source) throw new ApiError(404, 'Quiz not found');
     const isFriend = (await friendshipStatusBetween(viewerId, source.ownerId)) === 'friends';
-    if (!visibleToViewer(source.visibility, source.ownerId, viewerId, isFriend)) {
+    const canViewSubject = visibleToViewer(
+      source.subject.visibility,
+      source.subject.ownerId,
+      viewerId,
+      isFriend,
+    );
+    const canViewTopic = visibleToViewer(
+      source.topic.visibility,
+      source.subject.ownerId,
+      viewerId,
+      isFriend,
+    );
+    const canViewQuiz = visibleToViewer(
+      source.visibility,
+      source.ownerId,
+      viewerId,
+      isFriend,
+    );
+    if (!canViewSubject || !canViewTopic || !canViewQuiz) {
       throw new ApiError(403, 'You do not have access to this quiz');
     }
     if (source.ownerId !== viewerId && !source.allowCopy) {

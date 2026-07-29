@@ -172,7 +172,19 @@ router.post(
     });
     if (!source) throw new ApiError(404, 'Topic not found');
     const isFriend = (await friendshipStatusBetween(viewerId, source.subject.ownerId)) === 'friends';
-    if (!visibleToViewer(source.visibility, source.subject.ownerId, viewerId, isFriend)) {
+    const canViewSubject = visibleToViewer(
+      source.subject.visibility,
+      source.subject.ownerId,
+      viewerId,
+      isFriend,
+    );
+    const canViewTopic = visibleToViewer(
+      source.visibility,
+      source.subject.ownerId,
+      viewerId,
+      isFriend,
+    );
+    if (!canViewSubject || !canViewTopic) {
       throw new ApiError(403, 'You do not have access to this topic');
     }
     if (source.subject.ownerId !== viewerId && !source.allowCopy) {
