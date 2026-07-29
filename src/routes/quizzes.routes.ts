@@ -8,6 +8,7 @@ import { toQuizDto, toQuizAttemptDto } from '../utils/serializers';
 import { visibleToViewer, friendshipStatusBetween } from './friends.routes';
 import { computeNextRevision } from '../utils/spacedRepetition';
 import { createNotification } from '../services/notification.service';
+import { quizCopyCounts } from '../utils/copyStats';
 
 const router = Router();
 router.use(requireAuth);
@@ -50,7 +51,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
     const query = z.object({
-      filter: z.enum(['mine', 'friends', 'public', 'ai']).default('mine'),
+      filter: z.enum(['mine', 'friends', 'public', 'ai', 'accessible']).default('mine'),
       subjectId: z.string().uuid().optional(),
       topicId: z.string().uuid().optional(),
       search: z.string().trim().max(100).optional(),
@@ -86,7 +87,9 @@ router.get(
         ? { ownerId: { in: friendIds }, visibility: 'FRIENDS_ONLY' as const }
         : filter === 'public'
           ? { visibility: 'PUBLIC' as const, ownerId: { not: viewerId } }
-          : { isAiGenerated: true, ...accessWhere };
+          : filter === 'ai'
+            ? { isAiGenerated: true, ...accessWhere }
+            : accessWhere;
     const where = {
       subjectId: query.subjectId,
       topicId: query.topicId,
@@ -123,6 +126,7 @@ router.get(
         ]);
     const statsByQuiz = new Map(attemptStats.map((stats) => [stats.quizId, stats]));
     const repetitionByQuiz = new Map(repetitions.map((repetition) => [repetition.quizId, repetition]));
+    const copiedBy = await quizCopyCounts(quizIds);
     const dtos = quizzes.map((quiz) => {
       const stats = statsByQuiz.get(quiz.id);
       return toQuizDto(quiz, {
@@ -132,6 +136,7 @@ router.get(
         lastAttemptDate: stats?._max.attemptedAt ?? null,
         nextRevisionDate: repetitionByQuiz.get(quiz.id)?.nextRevisionDate ?? null,
         includeSolutions: quiz.ownerId === viewerId,
+        copiedByCount: copiedBy.get(quiz.id) ?? 0,
       });
     });
     res.json({
@@ -151,9 +156,11 @@ router.get(
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
     const quiz = await requireVisibleQuiz(req.params.id, viewerId);
+    const copiedBy = await quizCopyCounts([quiz.id]);
     res.json({ quiz: toQuizDto(quiz, {
       ...await quizExtras(quiz.id, viewerId),
       includeSolutions: quiz.ownerId === viewerId,
+      copiedByCount: copiedBy.get(quiz.id) ?? 0,
     }) });
   })
 );
@@ -238,6 +245,61 @@ router.post(
 );
 
 const updateQuizSchema = createQuizSchema.partial();
+
+const copyQuizSchema = z.object({ targetTopicId: z.string().uuid() });
+
+router.post(
+  '/:id/copy',
+  asyncHandler(async (req, res) => {
+    const viewerId = req.userId!;
+    const { targetTopicId } = copyQuizSchema.parse(req.body);
+    const source = await prisma.quiz.findUnique({
+      where: { id: req.params.id },
+      include: { subject: true, topic: true, questions: { orderBy: { order: 'asc' } }, owner: true },
+    });
+    if (!source) throw new ApiError(404, 'Quiz not found');
+    const isFriend = (await friendshipStatusBetween(viewerId, source.ownerId)) === 'friends';
+    if (!visibleToViewer(source.visibility, source.ownerId, viewerId, isFriend)) {
+      throw new ApiError(403, 'You do not have access to this quiz');
+    }
+    if (source.ownerId !== viewerId && !source.allowCopy) {
+      throw new ApiError(403, 'The owner has not allowed copying this quiz');
+    }
+    const target = await prisma.topic.findUnique({ where: { id: targetTopicId }, include: { subject: true } });
+    if (!target || target.subject.ownerId !== viewerId || target.isArchived || target.subject.isArchived) {
+      throw new ApiError(400, 'Choose one of your active topics');
+    }
+    const copy = await prisma.quiz.create({
+      data: {
+        title: `${source.title} (Copy)`,
+        subjectId: target.subjectId,
+        topicId: target.id,
+        visibility: 'PRIVATE',
+        allowCopy: false,
+        isAiGenerated: source.isAiGenerated,
+        timeLimitMinutes: source.timeLimitMinutes,
+        ownerId: viewerId,
+        originalCreatorId: source.originalCreatorId ?? source.ownerId,
+        originalCreatorName: source.originalCreatorName ?? source.owner.fullName,
+        copiedFromId: source.id,
+        questions: {
+          create: source.questions.map((question) => ({
+            order: question.order,
+            text: question.text,
+            optionA: question.optionA,
+            optionB: question.optionB,
+            optionC: question.optionC,
+            optionD: question.optionD,
+            correctAnswer: question.correctAnswer,
+            explanation: question.explanation,
+          })),
+        },
+      },
+      include: quizInclude,
+    });
+    res.status(201).json({ quiz: toQuizDto(copy, { includeSolutions: true }) });
+  }),
+);
 
 router.patch(
   '/:id',

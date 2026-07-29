@@ -6,6 +6,7 @@ import { asyncHandler, ApiError } from '../utils/asyncHandler';
 import { visibilityToDb } from '../utils/mappers';
 import { toTopicDto } from '../utils/serializers';
 import { visibleToViewer, friendshipStatusBetween } from './friends.routes';
+import { topicCopyCounts } from '../utils/copyStats';
 
 const router = Router();
 router.use(requireAuth);
@@ -42,8 +43,17 @@ router.get(
       include: { _count: { select: { quizzes: true } } },
       orderBy: { createdAt: 'asc' },
     });
+    const subject = await prisma.subject.findUniqueOrThrow({ where: { id: subjectId } });
+    const isFriend = (await friendshipStatusBetween(viewerId, subject.ownerId)) === 'friends';
+    const visibleTopics = topics.filter((topic) =>
+      visibleToViewer(topic.visibility, subject.ownerId, viewerId, isFriend),
+    );
+    const copiedBy = await topicCopyCounts(visibleTopics.map((topic) => topic.id));
     const dtos = await Promise.all(
-      topics.map(async (t) => toTopicDto(t, await topicRevisionInfo(t.id, viewerId)))
+      visibleTopics.map(async (t) => toTopicDto(t, {
+        ...await topicRevisionInfo(t.id, viewerId),
+        copiedByCount: copiedBy.get(t.id) ?? 0,
+      }))
     );
     res.json({ topics: dtos });
   })
@@ -59,7 +69,11 @@ router.get(
     });
     if (!topic) throw new ApiError(404, 'Topic not found');
     await assertSubjectAccess(topic.subjectId, viewerId);
-    res.json({ topic: toTopicDto(topic, await topicRevisionInfo(topic.id, viewerId)) });
+    const copiedBy = await topicCopyCounts([topic.id]);
+    res.json({ topic: toTopicDto(topic, {
+      ...await topicRevisionInfo(topic.id, viewerId),
+      copiedByCount: copiedBy.get(topic.id) ?? 0,
+    }) });
   })
 );
 
@@ -143,6 +157,46 @@ router.delete(
     await prisma.topic.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   })
+);
+
+const copyTopicSchema = z.object({ targetSubjectId: z.string().uuid() });
+
+router.post(
+  '/:id/copy',
+  asyncHandler(async (req, res) => {
+    const viewerId = req.userId!;
+    const { targetSubjectId } = copyTopicSchema.parse(req.body);
+    const source = await prisma.topic.findUnique({
+      where: { id: req.params.id },
+      include: { subject: { include: { owner: true } } },
+    });
+    if (!source) throw new ApiError(404, 'Topic not found');
+    const isFriend = (await friendshipStatusBetween(viewerId, source.subject.ownerId)) === 'friends';
+    if (!visibleToViewer(source.visibility, source.subject.ownerId, viewerId, isFriend)) {
+      throw new ApiError(403, 'You do not have access to this topic');
+    }
+    if (source.subject.ownerId !== viewerId && !source.allowCopy) {
+      throw new ApiError(403, 'The owner has not allowed copying this topic');
+    }
+    const target = await prisma.subject.findUnique({ where: { id: targetSubjectId } });
+    if (!target || target.ownerId !== viewerId || target.isArchived) {
+      throw new ApiError(400, 'Choose one of your active subjects');
+    }
+    const copy = await prisma.topic.create({
+      data: {
+        subjectId: target.id,
+        name: `${source.name} (Copy)`,
+        description: source.description,
+        visibility: 'PRIVATE',
+        allowCopy: false,
+        originalCreatorId: source.originalCreatorId ?? source.subject.ownerId,
+        originalCreatorName: source.originalCreatorName ?? source.subject.owner.fullName,
+        copiedFromId: source.id,
+      },
+      include: { _count: { select: { quizzes: true } } },
+    });
+    res.status(201).json({ topic: toTopicDto(copy) });
+  }),
 );
 
 export default router;

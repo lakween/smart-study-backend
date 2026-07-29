@@ -20,6 +20,7 @@ export function toUserDto(
     university: user.university,
     studyLevel: studyLevelFromDb(user.studyLevel),
     profileImageUrl: user.profileImageUrl,
+    showFriendsOnlyPlaceholders: user.showFriendsOnlyPlaceholders,
     subjectCount: extra.subjectCount ?? 0,
     quizCount: extra.quizCount ?? 0,
     friendCount: extra.friendCount ?? 0,
@@ -41,7 +42,7 @@ export function toQuestionDto(q: any, includeSolution = true) {
   };
 }
 
-export function toSubjectDto(s: any, extra: { topicCount?: number; quizCount?: number; avgScore?: number } = {}) {
+export function toSubjectDto(s: any, extra: { topicCount?: number; quizCount?: number; avgScore?: number; copiedByCount?: number } = {}) {
   return {
     id: s.id,
     name: s.name,
@@ -52,6 +53,10 @@ export function toSubjectDto(s: any, extra: { topicCount?: number; quizCount?: n
     ownerId: s.ownerId,
     ownerName: s.owner?.fullName,
     ownerImageUrl: s.owner?.profileImageUrl,
+    originalCreatorId: s.originalCreatorId,
+    originalCreatorName: s.originalCreatorName,
+    copiedFromId: s.copiedFromId,
+    copiedByCount: extra.copiedByCount ?? 0,
     topicCount: extra.topicCount ?? s._count?.topics ?? 0,
     quizCount: extra.quizCount ?? s._count?.quizzes ?? 0,
     avgScore: extra.avgScore ?? 0,
@@ -62,7 +67,7 @@ export function toSubjectDto(s: any, extra: { topicCount?: number; quizCount?: n
 
 export function toTopicDto(
   t: any,
-  extra: { quizCount?: number; lastScore?: number | null; nextRevisionDate?: Date | null } = {}
+  extra: { quizCount?: number; lastScore?: number | null; nextRevisionDate?: Date | null; copiedByCount?: number } = {}
 ) {
   return {
     id: t.id,
@@ -71,6 +76,10 @@ export function toTopicDto(
     description: t.description,
     visibility: visibilityFromDb(t.visibility),
     allowCopy: t.allowCopy,
+    originalCreatorId: t.originalCreatorId,
+    originalCreatorName: t.originalCreatorName,
+    copiedFromId: t.copiedFromId,
+    copiedByCount: extra.copiedByCount ?? 0,
     isArchived: t.isArchived,
     quizCount: extra.quizCount ?? t._count?.quizzes ?? 0,
     lastScore: extra.lastScore ?? null,
@@ -93,6 +102,9 @@ export function toDocumentDto(d: any) {
     visibility: visibilityFromDb(d.visibility),
     allowCopy: d.allowCopy,
     ownerId: d.ownerId,
+    originalCreatorId: d.originalCreatorId,
+    originalCreatorName: d.originalCreatorName,
+    copiedFromId: d.copiedFromId,
     uploadedAt: d.uploadedAt,
   };
 }
@@ -107,6 +119,7 @@ export function toQuizDto(
     nextRevisionDate?: Date | null;
     revisionIntervalDays?: number | null;
     includeSolutions?: boolean;
+    copiedByCount?: number;
   } = {}
 ) {
   return {
@@ -122,6 +135,10 @@ export function toQuizDto(
     timeLimitMinutes: q.timeLimitMinutes,
     questions: (q.questions ?? []).map((question: any) => toQuestionDto(question, extra.includeSolutions ?? false)),
     ownerId: q.ownerId,
+    originalCreatorId: q.originalCreatorId,
+    originalCreatorName: q.originalCreatorName,
+    copiedFromId: q.copiedFromId,
+    copiedByCount: extra.copiedByCount ?? 0,
     attemptCount: extra.attemptCount ?? 0,
     bestScore: extra.bestScore ?? null,
     avgScore: extra.avgScore ?? null,

@@ -6,10 +6,11 @@ import { requireAuth } from '../middleware/auth.middleware';
 import { upload } from '../middleware/upload.middleware';
 import { asyncHandler, ApiError } from '../utils/asyncHandler';
 import { studyLevelToDb } from '../utils/mappers';
-import { toUserDto, toSubjectDto, toQuizDto } from '../utils/serializers';
+import { toUserDto, toSubjectDto, toTopicDto, toDocumentDto, toQuizDto } from '../utils/serializers';
 import { getUserStats } from '../utils/userStats';
 import { env } from '../config/env';
 import { visibleToViewer, friendshipStatusBetween } from './friends.routes';
+import { quizCopyCounts, subjectCopyCounts, topicCopyCounts } from '../utils/copyStats';
 
 const router = Router();
 
@@ -18,6 +19,7 @@ const updateProfileSchema = z.object({
   bio: z.string().nullable().optional(),
   university: z.string().nullable().optional(),
   studyLevel: z.string().optional(),
+  showFriendsOnlyPlaceholders: z.boolean().optional(),
 });
 
 router.patch(
@@ -32,6 +34,7 @@ router.patch(
         bio: body.bio,
         university: body.university,
         studyLevel: body.studyLevel ? studyLevelToDb(body.studyLevel) : undefined,
+        showFriendsOnlyPlaceholders: body.showFriendsOnlyPlaceholders,
       },
     });
     const stats = await getUserStats(user.id);
@@ -113,11 +116,21 @@ router.get(
     const stats = await getUserStats(userId);
     const friendStatus = await friendshipStatusBetween(viewerId, userId);
 
-    const [subjects, quizzes] = await Promise.all([
+    const [subjects, topics, documents, quizzes] = await Promise.all([
       prisma.subject.findMany({
         where: { ownerId: userId },
         include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
         orderBy: { createdAt: 'desc' },
+      }),
+      prisma.topic.findMany({
+        where: { subject: { ownerId: userId } },
+        include: { subject: true, _count: { select: { quizzes: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.document.findMany({
+        where: { ownerId: userId },
+        include: { subject: true, topic: true },
+        orderBy: { uploadedAt: 'desc' },
       }),
       prisma.quiz.findMany({
         where: { ownerId: userId },
@@ -127,14 +140,63 @@ router.get(
     ]);
 
     const isFriend = friendStatus === 'friends';
+    const showLockedPlaceholders = viewerId !== userId && !isFriend && user.showFriendsOnlyPlaceholders;
     const visibleSubjects = subjects.filter((s) => visibleToViewer(s.visibility, s.ownerId, viewerId, isFriend));
-    const visibleQuizzes = quizzes.filter((q) => visibleToViewer(q.visibility, q.ownerId, viewerId, isFriend));
+    const visibleSubjectIds = new Set(visibleSubjects.map((subject) => subject.id));
+    const visibleTopics = topics.filter((topic) =>
+      visibleSubjectIds.has(topic.subjectId) && visibleToViewer(topic.visibility, userId, viewerId, isFriend),
+    );
+    const visibleTopicIds = new Set(visibleTopics.map((topic) => topic.id));
+    const visibleDocuments = documents.filter((document) =>
+      visibleSubjectIds.has(document.subjectId) &&
+      (!document.topicId || visibleTopicIds.has(document.topicId)) &&
+      visibleToViewer(document.visibility, document.ownerId, viewerId, isFriend),
+    );
+    const visibleQuizzes = quizzes.filter((quiz) =>
+      visibleSubjectIds.has(quiz.subjectId) &&
+      visibleTopicIds.has(quiz.topicId) &&
+      visibleToViewer(quiz.visibility, quiz.ownerId, viewerId, isFriend),
+    );
+    const topicCountBySubject = new Map<string, number>();
+    const quizCountBySubject = new Map<string, number>();
+    const quizCountByTopic = new Map<string, number>();
+    for (const topic of visibleTopics) {
+      topicCountBySubject.set(topic.subjectId, (topicCountBySubject.get(topic.subjectId) ?? 0) + 1);
+    }
+    for (const quiz of visibleQuizzes) {
+      quizCountBySubject.set(quiz.subjectId, (quizCountBySubject.get(quiz.subjectId) ?? 0) + 1);
+      quizCountByTopic.set(quiz.topicId, (quizCountByTopic.get(quiz.topicId) ?? 0) + 1);
+    }
+    const [subjectCopies, topicCopies, quizCopies] = await Promise.all([
+      subjectCopyCounts(visibleSubjects.map((subject) => subject.id)),
+      topicCopyCounts(visibleTopics.map((topic) => topic.id)),
+      quizCopyCounts(visibleQuizzes.map((quiz) => quiz.id)),
+    ]);
 
     res.json({
-      user: toUserDto(user, stats),
+      user: toUserDto(user, {
+        ...stats,
+        subjectCount: visibleSubjects.length,
+        quizCount: visibleQuizzes.length,
+      }),
       friendStatus,
-      subjects: visibleSubjects.map((s) => toSubjectDto(s)),
-      quizzes: visibleQuizzes.map((q) => toQuizDto(q)),
+      lockedContent: {
+        subjects: showLockedPlaceholders && subjects.some((subject) => subject.visibility === 'FRIENDS_ONLY'),
+        topics: showLockedPlaceholders && topics.some((topic) => topic.visibility === 'FRIENDS_ONLY' || topic.subject.visibility === 'FRIENDS_ONLY'),
+        documents: showLockedPlaceholders && documents.some((document) => document.visibility === 'FRIENDS_ONLY' || document.subject.visibility === 'FRIENDS_ONLY' || document.topic?.visibility === 'FRIENDS_ONLY'),
+        quizzes: showLockedPlaceholders && quizzes.some((quiz) => quiz.visibility === 'FRIENDS_ONLY' || quiz.subject.visibility === 'FRIENDS_ONLY' || quiz.topic.visibility === 'FRIENDS_ONLY'),
+      },
+      subjects: visibleSubjects.map((subject) => toSubjectDto(subject, {
+        topicCount: topicCountBySubject.get(subject.id) ?? 0,
+        quizCount: quizCountBySubject.get(subject.id) ?? 0,
+        copiedByCount: subjectCopies.get(subject.id) ?? 0,
+      })),
+      topics: visibleTopics.map((topic) => toTopicDto(topic, {
+        quizCount: quizCountByTopic.get(topic.id) ?? 0,
+        copiedByCount: topicCopies.get(topic.id) ?? 0,
+      })),
+      documents: visibleDocuments.map(toDocumentDto),
+      quizzes: visibleQuizzes.map((q) => toQuizDto(q, { copiedByCount: quizCopies.get(q.id) ?? 0 })),
     });
   })
 );

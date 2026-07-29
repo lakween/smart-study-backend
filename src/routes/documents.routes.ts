@@ -212,37 +212,25 @@ router.post(
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
     const source = await requireVisibleDocument(req.params.id, viewerId);
-    if (!source.allowCopy) throw new ApiError(403, 'The owner has not allowed copying this document');
+    if (source.ownerId !== viewerId && !source.allowCopy) {
+      throw new ApiError(403, 'The owner has not allowed copying this document');
+    }
+
+    const body = z.object({
+      targetSubjectId: z.string().uuid(),
+      targetTopicId: z.string().uuid().nullable().optional(),
+    }).parse(req.body);
 
     const copy = await prisma.$transaction(async (tx) => {
-      let targetSubject = await tx.subject.findFirst({
-        where: { ownerId: viewerId, name: source.subject.name, isArchived: false },
-      });
-      targetSubject ??= await tx.subject.create({
-        data: {
-          ownerId: viewerId,
-          name: source.subject.name,
-          description: `Personal copies from ${source.subject.name}`,
-          visibility: 'PRIVATE',
-          allowCopy: false,
-        },
-      });
-
-      let targetTopic = source.topic
-        ? await tx.topic.findFirst({
-            where: { subjectId: targetSubject.id, name: source.topic.name, isArchived: false },
-          })
+      const targetSubject = await tx.subject.findUnique({ where: { id: body.targetSubjectId } });
+      if (!targetSubject || targetSubject.ownerId !== viewerId || targetSubject.isArchived) {
+        throw new ApiError(400, 'Choose one of your active subjects');
+      }
+      const targetTopic = body.targetTopicId
+        ? await tx.topic.findUnique({ where: { id: body.targetTopicId } })
         : null;
-      if (source.topic && !targetTopic) {
-        targetTopic = await tx.topic.create({
-          data: {
-            subjectId: targetSubject.id,
-            name: source.topic.name,
-            description: source.topic.description,
-            visibility: 'PRIVATE',
-            allowCopy: false,
-          },
-        });
+      if (body.targetTopicId && (!targetTopic || targetTopic.subjectId !== targetSubject.id || targetTopic.isArchived)) {
+        throw new ApiError(400, 'Choose a topic in the selected subject');
       }
 
       return tx.document.create({
@@ -256,6 +244,9 @@ router.post(
           visibility: 'PRIVATE',
           allowCopy: false,
           ownerId: viewerId,
+          originalCreatorId: source.originalCreatorId ?? source.ownerId,
+          originalCreatorName: source.originalCreatorName ?? (await tx.user.findUniqueOrThrow({ where: { id: source.ownerId } })).fullName,
+          copiedFromId: source.id,
         },
         include: { subject: true, topic: true },
       });

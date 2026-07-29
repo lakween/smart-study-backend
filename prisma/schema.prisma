@@ -94,6 +94,7 @@ model User {
   university             String?
   studyLevel             StudyLevel @default(UNDERGRADUATE)
   profileImageUrl        String?
+  showFriendsOnlyPlaceholders Boolean @default(true)
   passwordResetToken     String?
   passwordResetExpiresAt DateTime?
   createdAt              DateTime   @default(now())
@@ -157,6 +158,9 @@ model Subject {
   allowCopy   Boolean    @default(false)
   isArchived  Boolean    @default(false)
   ownerId     String
+  originalCreatorId   String?
+  originalCreatorName String?
+  copiedFromId        String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -178,6 +182,9 @@ model Topic {
   visibility  Visibility @default(PRIVATE)
   allowCopy   Boolean    @default(false)
   isArchived  Boolean    @default(false)
+  originalCreatorId   String?
+  originalCreatorName String?
+  copiedFromId        String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -202,6 +209,9 @@ model Document {
   visibility    Visibility   @default(PRIVATE)
   allowCopy     Boolean      @default(false)
   ownerId       String
+  originalCreatorId   String?
+  originalCreatorName String?
+  copiedFromId        String?
   uploadedAt    DateTime     @default(now())
 
   subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
@@ -223,6 +233,9 @@ model Quiz {
   isAiGenerated    Boolean    @default(false)
   timeLimitMinutes Int?
   ownerId          String
+  originalCreatorId   String?
+  originalCreatorName String?
+  copiedFromId        String?
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 

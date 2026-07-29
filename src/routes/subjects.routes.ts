@@ -6,6 +6,7 @@ import { asyncHandler, ApiError } from '../utils/asyncHandler';
 import { visibilityToDb } from '../utils/mappers';
 import { toSubjectDto } from '../utils/serializers';
 import { visibleToViewer, friendshipStatusBetween } from './friends.routes';
+import { subjectCopyCounts } from '../utils/copyStats';
 
 const router = Router();
 router.use(requireAuth);
@@ -64,10 +65,11 @@ router.get(
       scores.push(attempt.scorePercent);
       scoresBySubject.set(attempt.quiz.subjectId, scores);
     }
+    const copiedBy = await subjectCopyCounts(subjects.map((subject) => subject.id));
     const dtos = subjects.map((subject) => {
       const scores = scoresBySubject.get(subject.id) ?? [];
       const avgScore = scores.length === 0 ? 0 : scores.reduce((sum, score) => sum + score, 0) / scores.length;
-      return toSubjectDto(subject, { avgScore });
+      return toSubjectDto(subject, { avgScore, copiedByCount: copiedBy.get(subject.id) ?? 0 });
     });
     res.json({
       subjects: dtos,
@@ -96,7 +98,11 @@ router.get(
       throw new ApiError(403, 'You do not have access to this subject');
     }
 
-    res.json({ subject: toSubjectDto(s, { avgScore: await subjectAvgScore(s.id, viewerId) }) });
+    const copiedBy = await subjectCopyCounts([s.id]);
+    res.json({ subject: toSubjectDto(s, {
+      avgScore: await subjectAvgScore(s.id, viewerId),
+      copiedByCount: copiedBy.get(s.id) ?? 0,
+    }) });
   })
 );
 
@@ -127,6 +133,143 @@ router.post(
     });
     res.status(201).json({ subject: toSubjectDto(subject) });
   })
+);
+
+const copySubjectSchema = z.object({
+  name: z.string().transform(cleanText).pipe(z.string().min(2).max(100)).optional(),
+});
+
+router.post(
+  '/:id/copy',
+  asyncHandler(async (req, res) => {
+    const viewerId = req.userId!;
+    const body = copySubjectSchema.parse(req.body);
+    const source = await prisma.subject.findUnique({
+      where: { id: req.params.id },
+      include: {
+        owner: true,
+        topics: { include: { quizzes: { include: { questions: { orderBy: { order: 'asc' } } } } } },
+        documents: true,
+      },
+    });
+    if (!source) throw new ApiError(404, 'Subject not found');
+
+    const isFriend = (await friendshipStatusBetween(viewerId, source.ownerId)) === 'friends';
+    if (!visibleToViewer(source.visibility, source.ownerId, viewerId, isFriend)) {
+      throw new ApiError(403, 'You do not have access to this subject');
+    }
+    if (source.ownerId !== viewerId && !source.allowCopy) {
+      throw new ApiError(403, 'The owner has not allowed copying this subject');
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const copiedSubject = await tx.subject.create({
+        data: {
+          name: body.name ?? `${source.name} (Copy)`,
+          description: source.description,
+          visibility: 'PRIVATE',
+          allowCopy: false,
+          ownerId: viewerId,
+          originalCreatorId: source.originalCreatorId ?? source.ownerId,
+          originalCreatorName: source.originalCreatorName ?? source.owner.fullName,
+          copiedFromId: source.id,
+        },
+      });
+
+      const topicIds = new Map<string, string>();
+      let copiedTopics = 0;
+      let copiedQuizzes = 0;
+      let copiedDocuments = 0;
+
+      for (const topic of source.topics) {
+        if (!topic.allowCopy || !visibleToViewer(topic.visibility, source.ownerId, viewerId, isFriend)) continue;
+        const copiedTopic = await tx.topic.create({
+          data: {
+            subjectId: copiedSubject.id,
+            name: topic.name,
+            description: topic.description,
+            visibility: 'PRIVATE',
+            allowCopy: false,
+            originalCreatorId: topic.originalCreatorId ?? source.ownerId,
+            originalCreatorName: topic.originalCreatorName ?? source.owner.fullName,
+            copiedFromId: topic.id,
+          },
+        });
+        topicIds.set(topic.id, copiedTopic.id);
+        copiedTopics += 1;
+
+        for (const quiz of topic.quizzes) {
+          if (!quiz.allowCopy || !visibleToViewer(quiz.visibility, source.ownerId, viewerId, isFriend)) continue;
+          await tx.quiz.create({
+            data: {
+              title: quiz.title,
+              subjectId: copiedSubject.id,
+              topicId: copiedTopic.id,
+              visibility: 'PRIVATE',
+              allowCopy: false,
+              isAiGenerated: quiz.isAiGenerated,
+              timeLimitMinutes: quiz.timeLimitMinutes,
+              ownerId: viewerId,
+              originalCreatorId: quiz.originalCreatorId ?? source.ownerId,
+              originalCreatorName: quiz.originalCreatorName ?? source.owner.fullName,
+              copiedFromId: quiz.id,
+              questions: {
+                create: quiz.questions.map((question) => ({
+                  order: question.order,
+                  text: question.text,
+                  optionA: question.optionA,
+                  optionB: question.optionB,
+                  optionC: question.optionC,
+                  optionD: question.optionD,
+                  correctAnswer: question.correctAnswer,
+                  explanation: question.explanation,
+                })),
+              },
+            },
+          });
+          copiedQuizzes += 1;
+        }
+      }
+
+      for (const document of source.documents) {
+        if (!document.allowCopy || !visibleToViewer(document.visibility, source.ownerId, viewerId, isFriend)) continue;
+        const copiedTopicId = document.topicId ? topicIds.get(document.topicId) : null;
+        if (document.topicId && !copiedTopicId) continue;
+        await tx.document.create({
+          data: {
+            title: document.title,
+            subjectId: copiedSubject.id,
+            topicId: copiedTopicId ?? null,
+            fileUrl: document.fileUrl,
+            fileType: document.fileType,
+            fileSizeBytes: document.fileSizeBytes,
+            visibility: 'PRIVATE',
+            allowCopy: false,
+            ownerId: viewerId,
+            originalCreatorId: document.originalCreatorId ?? source.ownerId,
+            originalCreatorName: document.originalCreatorName ?? source.owner.fullName,
+            copiedFromId: document.id,
+          },
+        });
+        copiedDocuments += 1;
+      }
+
+      const subject = await tx.subject.findUniqueOrThrow({
+        where: { id: copiedSubject.id },
+        include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
+      });
+      return { subject, copiedTopics, copiedQuizzes, copiedDocuments };
+    });
+
+    res.status(201).json({
+      subject: toSubjectDto(result.subject),
+      copied: {
+        topics: result.copiedTopics,
+        quizzes: result.copiedQuizzes,
+        documents: result.copiedDocuments,
+      },
+    });
+  }),
 );
 
 const updateSchema = createSchema.partial();
