@@ -6,6 +6,7 @@ import {
   studyLevelFromDb,
   visibilityFromDb,
 } from './mappers';
+import { env } from '../config/env';
 
 export function toUserDto(
   user: any,
@@ -47,6 +48,7 @@ export function toSubjectDto(s: any, extra: { topicCount?: number; quizCount?: n
     description: s.description,
     visibility: visibilityFromDb(s.visibility),
     allowCopy: s.allowCopy,
+    isArchived: s.isArchived,
     ownerId: s.ownerId,
     ownerName: s.owner?.fullName,
     ownerImageUrl: s.owner?.profileImageUrl,
@@ -69,6 +71,7 @@ export function toTopicDto(
     description: t.description,
     visibility: visibilityFromDb(t.visibility),
     allowCopy: t.allowCopy,
+    isArchived: t.isArchived,
     quizCount: extra.quizCount ?? t._count?.quizzes ?? 0,
     lastScore: extra.lastScore ?? null,
     nextRevisionDate: extra.nextRevisionDate ?? null,
@@ -84,7 +87,7 @@ export function toDocumentDto(d: any) {
     subjectName: d.subject?.name,
     topicId: d.topicId,
     topicName: d.topic?.name,
-    fileUrl: d.fileUrl,
+    fileUrl: `${env.publicBaseUrl}/documents/${d.id}/file`,
     fileType: documentTypeFromDb(d.fileType),
     fileSizeBytes: d.fileSizeBytes,
     visibility: visibilityFromDb(d.visibility),
@@ -102,6 +105,7 @@ export function toQuizDto(
     avgScore?: number | null;
     lastAttemptDate?: Date | null;
     nextRevisionDate?: Date | null;
+    revisionIntervalDays?: number | null;
     includeSolutions?: boolean;
   } = {}
 ) {
@@ -123,6 +127,7 @@ export function toQuizDto(
     avgScore: extra.avgScore ?? null,
     lastAttemptDate: extra.lastAttemptDate ?? null,
     nextRevisionDate: extra.nextRevisionDate ?? null,
+    revisionIntervalDays: extra.revisionIntervalDays ?? null,
     createdAt: q.createdAt,
   };
 }
@@ -132,6 +137,16 @@ export function toQuizAttemptDto(a: any) {
     id: a.id,
     quizId: a.quizId,
     quizTitle: a.quiz?.title,
+    subjectId: a.quiz?.subjectId,
+    subjectName: a.quiz?.subject?.name,
+    topicId: a.quiz?.topicId,
+    topicName: a.quiz?.topic?.name,
+    isAiGenerated: a.quiz?.isAiGenerated ?? false,
+    practiceMode: a.session?.mode === 'TIMED'
+      ? 'timed'
+      : a.session?.mode === 'UNTIMED'
+        ? 'untimed'
+        : null,
     userId: a.userId,
     answers: (a.answers ?? []).map((ans: any) => ({
       questionId: ans.questionId,

@@ -65,12 +65,19 @@ router.get(
 
 const cleanText = (value: string) => value.replace(/\0/g, '').trim();
 
+function visibilityLevel(value: string): number {
+  if (value === 'PUBLIC' || value === 'public') return 2;
+  if (value === 'FRIENDS_ONLY' || value === 'friendsOnly') return 1;
+  return 0;
+}
+
 const createSchema = z.object({
   subjectId: z.string().uuid(),
   name: z.string().transform(cleanText).pipe(z.string().min(2).max(100)),
   description: z.string().transform(cleanText).nullable().optional(),
   visibility: z.enum(['private', 'friendsOnly', 'public']).default('private'),
   allowCopy: z.boolean().default(false),
+  isArchived: z.boolean().default(false),
 });
 
 router.post(
@@ -80,6 +87,9 @@ router.post(
     const subject = await prisma.subject.findUnique({ where: { id: body.subjectId } });
     if (!subject) throw new ApiError(404, 'Subject not found');
     if (subject.ownerId !== req.userId) throw new ApiError(403, 'Only the subject owner can add topics');
+    if (visibilityLevel(body.visibility) > visibilityLevel(subject.visibility)) {
+      throw new ApiError(400, 'Topic visibility cannot be broader than its subject visibility');
+    }
 
     const topic = await prisma.topic.create({
       data: {
@@ -88,6 +98,7 @@ router.post(
         description: body.description || null,
         visibility: visibilityToDb(body.visibility),
         allowCopy: body.allowCopy,
+        isArchived: body.isArchived,
       },
       include: { _count: { select: { quizzes: true } } },
     });
@@ -105,6 +116,9 @@ router.patch(
     if (topic.subject.ownerId !== req.userId) throw new ApiError(403, 'Only the subject owner can edit this topic');
 
     const body = updateSchema.parse(req.body);
+    if (body.visibility && visibilityLevel(body.visibility) > visibilityLevel(topic.subject.visibility)) {
+      throw new ApiError(400, 'Topic visibility cannot be broader than its subject visibility');
+    }
     const updated = await prisma.topic.update({
       where: { id: req.params.id },
       data: {
@@ -112,6 +126,7 @@ router.patch(
         description: body.description,
         visibility: body.visibility ? visibilityToDb(body.visibility) : undefined,
         allowCopy: body.allowCopy,
+        isArchived: body.isArchived,
       },
       include: { _count: { select: { quizzes: true } } },
     });

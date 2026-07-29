@@ -10,7 +10,7 @@ let io: Server | null = null;
 export function initializeSocket(httpServer: HttpServer): Server {
   io = new Server(httpServer, {
     cors: {
-      origin: env.corsOrigin === '*' ? true : env.corsOrigin.split(','),
+      origin: env.corsOrigin === '*' ? true : env.corsOrigin.split(',').map((origin) => origin.trim()),
     },
   });
 
@@ -55,6 +55,18 @@ export function initializeSocket(httpServer: HttpServer): Server {
 
 export function emitNotification(userId: string, notification: unknown): void {
   io?.to(userRoom(userId)).emit('notification:new', notification);
+}
+
+export function emitFriendshipChanged(userIds: string[], change: unknown): void {
+  for (const userId of new Set(userIds)) {
+    io?.to(userRoom(userId)).emit('friendship:changed', change);
+  }
+}
+
+export function emitExamChanged(userIds: string[], change: unknown): void {
+  for (const userId of new Set(userIds)) {
+    io?.to(userRoom(userId)).emit('exam:changed', change);
+  }
 }
 
 function userRoom(userId: string): string {

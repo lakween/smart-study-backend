@@ -4,6 +4,7 @@ import { app } from './app';
 import { env } from './config/env';
 import { initializeSocket } from './realtime/socket';
 import { startRevisionReminderScheduler } from './services/revision-reminder.service';
+import { startExamLifecycleScheduler } from './services/exam-lifecycle.service';
 
 const httpServer = createServer(app);
 initializeSocket(httpServer);
@@ -14,4 +15,5 @@ httpServer.listen(env.port, () => {
     env.aiProvider === 'openai' ? env.openAiModel : env.geminiModel;
   console.log(`AI quiz provider: ${env.aiProvider} (${aiModel})`);
   startRevisionReminderScheduler();
+  startExamLifecycleScheduler();
 });

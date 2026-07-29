@@ -159,6 +159,11 @@ router.get(
 );
 
 const cleanText = (value: string) => value.replace(/\0/g, '').trim();
+const visibilityLevel = (value: string) => {
+  if (value === 'PUBLIC' || value === 'public') return 2;
+  if (value === 'FRIENDS_ONLY' || value === 'friendsOnly') return 1;
+  return 0;
+};
 const requiredText = (minimum: number, maximum: number) =>
   z.string().transform(cleanText).pipe(z.string().min(minimum).max(maximum));
 
@@ -196,6 +201,12 @@ router.post(
     }
     if (topic.subject.ownerId !== req.userId) {
       throw new ApiError(403, 'Only the subject owner can create quizzes');
+    }
+    if (visibilityLevel(body.visibility) > Math.min(
+      visibilityLevel(topic.visibility),
+      visibilityLevel(topic.subject.visibility),
+    )) {
+      throw new ApiError(400, 'Quiz visibility cannot be broader than its topic and subject');
     }
     const quiz = await prisma.quiz.create({
       data: {
@@ -248,6 +259,13 @@ router.patch(
     }
     if (topic.subject.ownerId !== req.userId) {
       throw new ApiError(403, 'Only the subject owner can move or edit this quiz');
+    }
+    const nextVisibility = body.visibility ?? existing.visibility;
+    if (visibilityLevel(nextVisibility) > Math.min(
+      visibilityLevel(topic.visibility),
+      visibilityLevel(topic.subject.visibility),
+    )) {
+      throw new ApiError(400, 'Quiz visibility cannot be broader than its topic and subject');
     }
 
     await prisma.$transaction(async (tx) => {

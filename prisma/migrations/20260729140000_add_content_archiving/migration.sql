@@ -1,0 +1,2 @@
+ALTER TABLE "subjects" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "topics" ADD COLUMN "isArchived" BOOLEAN NOT NULL DEFAULT false;

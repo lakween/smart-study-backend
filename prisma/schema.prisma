@@ -47,6 +47,24 @@ enum ExamStatus {
   CANCELLED
 }
 
+enum ExamInvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum ExamAttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  AUTO_SUBMITTED
+}
+
+enum ExamResultRelease {
+  AFTER_SUBMISSION
+  AFTER_CLOSE
+}
+
 enum FriendshipStatus {
   PENDING
   ACCEPTED
@@ -68,17 +86,18 @@ enum QuizPracticeMode {
 }
 
 model User {
-  id                 String     @id @default(uuid())
-  fullName           String
-  email              String     @unique
-  passwordHash       String
-  bio                String?
-  university         String?
-  studyLevel         StudyLevel @default(UNDERGRADUATE)
-  profileImageUrl    String?
-  passwordResetToken String?
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
+  id                     String     @id @default(uuid())
+  fullName               String
+  email                  String     @unique
+  passwordHash           String
+  bio                    String?
+  university             String?
+  studyLevel             StudyLevel @default(UNDERGRADUATE)
+  profileImageUrl        String?
+  passwordResetToken     String?
+  passwordResetExpiresAt DateTime?
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
 
   subjects           Subject[]
   documents          Document[]
@@ -88,12 +107,29 @@ model User {
   spacedRepetitions  SpacedRepetition[]
   organizedExams     Exam[]             @relation("ExamOrganizer")
   examParticipations ExamParticipant[]
+  examInvitations    ExamInvitation[]
+  examAttempts       ExamAttempt[]
   notifications      Notification[]
+  refreshTokens      RefreshToken[]
 
   friendshipsSent     Friendship[] @relation("FriendshipRequester")
   friendshipsReceived Friendship[] @relation("FriendshipAddressee")
 
   @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("refresh_tokens")
 }
 
 model Friendship {
@@ -108,6 +144,8 @@ model Friendship {
   addressee User @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
 
   @@unique([requesterId, addresseeId])
+  @@index([requesterId, status])
+  @@index([addresseeId, status])
   @@map("friendships")
 }
 
@@ -117,6 +155,7 @@ model Subject {
   description String?
   visibility  Visibility @default(PRIVATE)
   allowCopy   Boolean    @default(false)
+  isArchived  Boolean    @default(false)
   ownerId     String
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -127,6 +166,7 @@ model Subject {
   quizzes   Quiz[]
   exams     Exam[]
 
+  @@index([ownerId, updatedAt])
   @@map("subjects")
 }
 
@@ -137,6 +177,7 @@ model Topic {
   description String?
   visibility  Visibility @default(PRIVATE)
   allowCopy   Boolean    @default(false)
+  isArchived  Boolean    @default(false)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -146,6 +187,7 @@ model Topic {
   exams             Exam[]
   spacedRepetitions SpacedRepetition[]
 
+  @@index([subjectId, createdAt])
   @@map("topics")
 }
 
@@ -166,6 +208,8 @@ model Document {
   topic   Topic?  @relation(fields: [topicId], references: [id], onDelete: SetNull)
   owner   User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
+  @@index([ownerId, uploadedAt])
+  @@index([subjectId, uploadedAt])
   @@map("documents")
 }
 
@@ -190,6 +234,10 @@ model Quiz {
   sessions          QuizSession[]
   spacedRepetitions SpacedRepetition[]
 
+  @@index([ownerId, createdAt])
+  @@index([subjectId, createdAt])
+  @@index([topicId, createdAt])
+  @@index([visibility, createdAt])
   @@map("quizzes")
 }
 
@@ -209,7 +257,9 @@ model Question {
   quiz    Quiz?            @relation(fields: [quizId], references: [id], onDelete: Cascade)
   exam    Exam?            @relation(fields: [examId], references: [id], onDelete: Cascade)
   answers QuestionAnswer[]
+  examAnswers ExamAnswer[]
 
+  @@index([quizId, order])
   @@map("questions")
 }
 
@@ -281,6 +331,7 @@ model SpacedRepetition {
   topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
 
   @@unique([userId, quizId])
+  @@index([userId, nextRevisionDate])
   @@map("spaced_repetitions")
 }
 
@@ -293,15 +344,27 @@ model Exam {
   status          ExamStatus @default(SCHEDULED)
   durationMinutes Int
   startTime       DateTime?
+  closesAt        DateTime?
+  questionCount   Int               @default(20)
+  passPercent     Int               @default(60)
+  shuffleQuestions Boolean          @default(true)
+  resultRelease   ExamResultRelease @default(AFTER_SUBMISSION)
+  publishedAt     DateTime?
   organizerId     String
   createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   subject      Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   topic        Topic             @relation(fields: [topicId], references: [id], onDelete: Cascade)
   organizer    User              @relation("ExamOrganizer", fields: [organizerId], references: [id], onDelete: Cascade)
   questions    Question[]
   participants ExamParticipant[]
+  invitations  ExamInvitation[]
+  attempts     ExamAttempt[]
 
+  @@index([organizerId, createdAt])
+  @@index([status, startTime])
+  @@index([closesAt])
   @@map("exams")
 }
 
@@ -321,6 +384,62 @@ model ExamParticipant {
   @@map("exam_participants")
 }
 
+model ExamInvitation {
+  id          String               @id @default(uuid())
+  examId      String
+  userId      String
+  status      ExamInvitationStatus @default(PENDING)
+  respondedAt DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, userId])
+  @@index([userId, status, createdAt])
+  @@map("exam_invitations")
+}
+
+model ExamAttempt {
+  id             String            @id @default(uuid())
+  examId         String
+  userId         String
+  status         ExamAttemptStatus @default(IN_PROGRESS)
+  startedAt      DateTime          @default(now())
+  deadlineAt     DateTime
+  submittedAt    DateTime?
+  scorePercent   Float?
+  correctCount   Int?
+  totalQuestions Int
+  questionOrder  Json
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  exam    Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers ExamAnswer[]
+
+  @@unique([examId, userId])
+  @@index([userId, status, startedAt])
+  @@index([deadlineAt, status])
+  @@map("exam_attempts")
+}
+
+model ExamAnswer {
+  id             String        @id @default(uuid())
+  attemptId      String
+  questionId     String
+  selectedAnswer AnswerOption?
+  savedAt        DateTime      @updatedAt
+
+  attempt  ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, questionId])
+  @@map("exam_answers")
+}
+
 model Notification {
   id        String           @id @default(uuid())
   userId    String
@@ -333,5 +452,6 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, createdAt])
   @@map("notifications")
 }

@@ -13,7 +13,7 @@
     "db:migrate-and-seed": "prisma migrate dev && prisma db seed",
     "seed": "tsx prisma/seed.ts",
     "seed:test-users": "tsx prisma/seed-test-users.ts",
-    "test": "tsx --test src/utils/mappers.test.ts src/utils/spacedRepetition.test.ts src/middleware/error.middleware.test.ts src/middleware/rateLimit.middleware.test.ts"
+    "test": "tsx --test src/utils/mappers.test.ts src/utils/spacedRepetition.test.ts src/middleware/error.middleware.test.ts src/middleware/rateLimit.middleware.test.ts src/services/exam.service.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -30,7 +30,6 @@
     "openai": "^6.49.0",
     "pdf-parse": "^1.1.1",
     "socket.io": "^4.8.1",
-    "uuid": "^9.0.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -41,7 +40,6 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^20.16.10",
     "@types/pdf-parse": "^1.1.4",
-    "@types/uuid": "^9.0.8",
     "prisma": "^5.20.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"

@@ -67,15 +67,17 @@ src/
 prisma/
   schema.prisma           Full data model
   seed.ts                 Demo data matching the Flutter app's old mock data
-uploads/                  Uploaded documents & avatars (served at /uploads/*)
+uploads/                  Persisted document/avatar bytes; documents use an authorized file route
 ```
 
 ## API overview
 
-All endpoints except `/health`, `/auth/register`, `/auth/login`, `/auth/forgot-password`,
-`/auth/reset-password` require `Authorization: Bearer <token>`.
+All endpoints except `/health`, `/auth/register`, `/auth/login`, `/auth/refresh`,
+`/auth/logout`, `/auth/forgot-password`, and `/auth/reset-password` require
+`Authorization: Bearer <token>`.
 
-- `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
+- `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`,
+  `POST /auth/logout`, `GET /auth/me`
 - `POST /auth/forgot-password`, `POST /auth/reset-password`
 - `PATCH /users/me`, `POST /users/me/avatar`, `POST /users/me/change-password`,
   `POST /users/me/change-email`, `DELETE /users/me`, `GET /users/:userId/profile`
@@ -85,12 +87,13 @@ All endpoints except `/health`, `/auth/register`, `/auth/login`, `/auth/forgot-p
 - `GET/POST /quizzes?filter=mine|friends|public|ai&subjectId=&topicId=`, `GET/PATCH/DELETE /quizzes/:id`
 - `POST /quizzes/:id/attempts`, `GET /quizzes/:id/attempts/:attemptId`
 - `POST /ai-quiz/generate` (multipart file + questionCount) → returns AI-generated questions to review
-- `GET/POST /exams?tab=mine|invited`, `GET /exams/:id`, `POST /exams/:id/start`, `POST /exams/:id/submit`
+- `GET/POST /exams?tab=mine|invited`, `GET/PATCH/DELETE /exams/:id`, `POST /exams/:id/publish`, `POST /exams/:id/cancel`
+- `POST /exams/:id/invitations/respond`, `POST /exams/:id/attempts`, `PUT /exams/:id/attempts/:attemptId/answers`, `POST /exams/:id/attempts/:attemptId/submit`, `GET /exams/:id/results`
 - `GET /friends`, `GET /friends/search?q=`, `GET /friends/requests`,
   `POST /friends/request/:userId`, `POST /friends/accept/:userId`, `POST /friends/decline/:userId`,
   `DELETE /friends/request/:userId`, `DELETE /friends/:userId`
 - `GET/POST /notifications`, `POST /notifications/read-all`, `POST /notifications/:id/read`, `DELETE /notifications/:id`
-- `GET /dashboard/home`, `GET /dashboard/performance?period=week|month|all`
+- `GET /dashboard/home`, `GET /dashboard/performance?period=week|month|all` (comparison, dated consistency/streaks, memory stages, rankings, revision actions, and submitted exam history)
 
 ## Real-time in-app notifications
 
@@ -101,7 +104,14 @@ opens a Socket.IO connection using the JWT in `auth.token`.
 The server verifies the token, joins the socket to the private room
 `user:<userId>`, and emits `notification:new` after the notification record is
 stored. Friend requests and acceptances, exam invitations, quiz completion,
-and AI quiz generation use this shared notification service.
+and AI quiz generation use this shared notification service. Exam lifecycle
+changes also emit `exam:changed`, allowing open clients to refresh exam state.
+
+Published exams snapshot topic questions and never expose correct answers in
+attempt payloads. The server owns deadlines, autosaved answers, scoring, and
+result release. A restart-safe 30-second lifecycle scan auto-submits overdue
+attempts, expires unanswered invitations, closes exams, and emits durable
+result notifications.
 
 This is foreground in-app delivery, not operating-system push. It updates an
 open app without polling or restarting, but it cannot notify a closed app.
@@ -157,9 +167,11 @@ Implementation and consumers:
 - Algorithm: `src/utils/spacedRepetition.ts`
 - Attempt integration: `src/routes/quizzes.routes.ts`
 - Database record: `SpacedRepetition` in `prisma/schema.prisma`
-- Home revision queue: `GET /dashboard/home`
-- Upcoming revisions and missed-revision insights:
-  `GET /dashboard/performance`
+- Home memory summary and revision queue: `GET /dashboard/home` returns due-now, next-three-day, and active-plan counts plus each queued quiz's current interval, last score, and next revision date.
+- Performance analytics: `GET /dashboard/performance?period=week|month|all`
+  returns equal-period comparison, real completion-dated consistency/streaks,
+  stored memory stages, actionable reviews, rankings, recommendations, and
+  submitted exam history.
 - Topic revision summary: `GET /topics?subjectId=...`
 
 The Flutter app displays this information on the home dashboard, performance

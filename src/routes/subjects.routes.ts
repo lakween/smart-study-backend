@@ -23,21 +23,61 @@ router.get(
   '/',
   asyncHandler(async (req, res) => {
     const viewerId = req.userId!;
-    const visibilityFilter = req.query.visibility as string | undefined;
+    const query = z.object({
+      visibility: z.enum(['private', 'friendsOnly', 'public']).optional(),
+      search: z.string().trim().max(100).default(''),
+      archived: z.enum(['true', 'false']).default('false'),
+      sort: z.enum(['updated', 'name', 'created']).default('updated'),
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(50).default(20),
+    }).parse(req.query);
+    const where = {
+      ownerId: viewerId,
+      visibility: query.visibility ? visibilityToDb(query.visibility) : undefined,
+      isArchived: query.archived === 'true',
+      ...(query.search ? { name: { contains: query.search, mode: 'insensitive' as const } } : {}),
+    };
+    const orderBy = query.sort === 'name'
+      ? { name: 'asc' as const }
+      : query.sort === 'created'
+        ? { createdAt: 'desc' as const }
+        : { updatedAt: 'desc' as const };
 
-    const subjects = await prisma.subject.findMany({
-      where: {
-        ownerId: viewerId,
-        visibility: visibilityFilter ? visibilityToDb(visibilityFilter) : undefined,
-      },
-      include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
-      orderBy: { updatedAt: 'desc' },
+    const [subjects, total] = await prisma.$transaction([
+      prisma.subject.findMany({
+        where,
+        include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
+        orderBy,
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      prisma.subject.count({ where }),
+    ]);
+
+    const attempts = subjects.length === 0 ? [] : await prisma.quizAttempt.findMany({
+      where: { userId: viewerId, quiz: { subjectId: { in: subjects.map((subject) => subject.id) } } },
+      select: { scorePercent: true, quiz: { select: { subjectId: true } } },
     });
-
-    const dtos = await Promise.all(
-      subjects.map(async (s) => toSubjectDto(s, { avgScore: await subjectAvgScore(s.id, viewerId) }))
-    );
-    res.json({ subjects: dtos });
+    const scoresBySubject = new Map<string, number[]>();
+    for (const attempt of attempts) {
+      const scores = scoresBySubject.get(attempt.quiz.subjectId) ?? [];
+      scores.push(attempt.scorePercent);
+      scoresBySubject.set(attempt.quiz.subjectId, scores);
+    }
+    const dtos = subjects.map((subject) => {
+      const scores = scoresBySubject.get(subject.id) ?? [];
+      const avgScore = scores.length === 0 ? 0 : scores.reduce((sum, score) => sum + score, 0) / scores.length;
+      return toSubjectDto(subject, { avgScore });
+    });
+    res.json({
+      subjects: dtos,
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        hasMore: query.page * query.limit < total,
+      },
+    });
   })
 );
 
@@ -67,6 +107,7 @@ const createSchema = z.object({
   description: z.string().transform(cleanText).nullable().optional(),
   visibility: z.enum(['private', 'friendsOnly', 'public']).default('private'),
   allowCopy: z.boolean().default(false),
+  isArchived: z.boolean().default(false),
 });
 
 router.post(
@@ -79,6 +120,7 @@ router.post(
         description: body.description || null,
         visibility: visibilityToDb(body.visibility),
         allowCopy: body.allowCopy,
+        isArchived: body.isArchived,
         ownerId: req.userId!,
       },
       include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
@@ -97,14 +139,36 @@ router.patch(
     if (existing.ownerId !== req.userId) throw new ApiError(403, 'Only the owner can edit this subject');
 
     const body = updateSchema.parse(req.body);
-    const subject = await prisma.subject.update({
+    await prisma.$transaction(async (tx) => {
+      const visibility = body.visibility ? visibilityToDb(body.visibility) : undefined;
+      await tx.subject.update({
+        where: { id: req.params.id },
+        data: {
+          name: body.name,
+          description: body.description,
+          visibility,
+          allowCopy: body.allowCopy,
+          isArchived: body.isArchived,
+        },
+      });
+
+      // Children must never be more visible than their parent subject.
+      if (visibility === 'PRIVATE') {
+        await Promise.all([
+          tx.topic.updateMany({ where: { subjectId: req.params.id }, data: { visibility: 'PRIVATE' } }),
+          tx.quiz.updateMany({ where: { subjectId: req.params.id }, data: { visibility: 'PRIVATE' } }),
+          tx.document.updateMany({ where: { subjectId: req.params.id }, data: { visibility: 'PRIVATE' } }),
+        ]);
+      } else if (visibility === 'FRIENDS_ONLY') {
+        await Promise.all([
+          tx.topic.updateMany({ where: { subjectId: req.params.id, visibility: 'PUBLIC' }, data: { visibility: 'FRIENDS_ONLY' } }),
+          tx.quiz.updateMany({ where: { subjectId: req.params.id, visibility: 'PUBLIC' }, data: { visibility: 'FRIENDS_ONLY' } }),
+          tx.document.updateMany({ where: { subjectId: req.params.id, visibility: 'PUBLIC' }, data: { visibility: 'FRIENDS_ONLY' } }),
+        ]);
+      }
+    });
+    const subject = await prisma.subject.findUniqueOrThrow({
       where: { id: req.params.id },
-      data: {
-        name: body.name,
-        description: body.description,
-        visibility: body.visibility ? visibilityToDb(body.visibility) : undefined,
-        allowCopy: body.allowCopy,
-      },
       include: { owner: true, _count: { select: { topics: true, quizzes: true } } },
     });
     res.json({ subject: toSubjectDto(subject, { avgScore: await subjectAvgScore(subject.id, req.userId!) }) });
